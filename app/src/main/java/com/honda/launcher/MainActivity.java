@@ -149,8 +149,11 @@ public class MainActivity extends Activity implements LocationListener {
                        "com.gocsdk.action.DEVICE_DISCONNECTED".equals(act)) {
                 try {
                     BluetoothDevice dev = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-                    if (dev != null && lastConnectedPhone != null && dev.getAddress().equalsIgnoreCase(lastConnectedPhone.getAddress())) {
-                        lastConnectedPhone = null;
+                    if (dev != null) {
+                        if (lastConnectedPhone != null && dev.getAddress().equalsIgnoreCase(lastConnectedPhone.getAddress())) {
+                            lastConnectedPhone = null;
+                        }
+                        obd.onDeviceDisconnected(dev.getAddress());
                     }
                 } catch (Throwable ignore) { }
             }
@@ -183,10 +186,21 @@ public class MainActivity extends Activity implements LocationListener {
         if (savedMac != null && !savedMac.isEmpty()) {
             obd.manualDeviceAddress = savedMac;
         }
+        obd.autoConnect = prefs.getBoolean("auto_obd_connect", true);
 
         buildUi();
         applyGaugeToggles();
         EqManager.get(this);   // re-applies saved equalizer levels
+
+        // Startup needle sweep (0 to 200 km/h and back like a sports car cluster)
+        if (speedo != null) {
+            speedo.postDelayed(new Runnable() {
+                @Override public void run() {
+                    speedo.startNeedleSweep();
+                }
+            }, 300);
+        }
+
         if (Build.VERSION.SDK_INT >= 23 && !hasLoc()) {
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
         }
@@ -195,6 +209,7 @@ public class MainActivity extends Activity implements LocationListener {
     @Override protected void onResume() {
         super.onResume();
         startGps();
+        obd.autoConnect = prefs.getBoolean("auto_obd_connect", true);
         obd.start();
         h.post(tick);
 
@@ -1440,6 +1455,51 @@ public class MainActivity extends Activity implements LocationListener {
 
         btnRow.addView(btnCarBt, lp(0, W, 1f));
         card.addView(btnRow);
+
+        // Auto-connect OBD-II Toggle Row
+        LinearLayout autoRow = new LinearLayout(this);
+        autoRow.setOrientation(LinearLayout.HORIZONTAL);
+        autoRow.setGravity(Gravity.CENTER_VERTICAL);
+        autoRow.setBackground(shape(0x14FFFFFF));
+        autoRow.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        LinearLayout autoInfo = new LinearLayout(this);
+        autoInfo.setOrientation(LinearLayout.VERTICAL);
+
+        TextView tAutoTitle = label(14, 0xFFFFFFFF);
+        tAutoTitle.setText("AUTO-CONNECT OBD-II");
+        tAutoTitle.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+
+        final TextView tAutoSub = label(11, 0x8CFFFFFF);
+        boolean autoEnabled = prefs.getBoolean("auto_obd_connect", true);
+        tAutoSub.setText(autoEnabled ? "Automatically reconnects to OBD-II scanner in background" : "Manual mode: Tap [CONNECT OBD] when scanner is plugged in");
+
+        autoInfo.addView(tAutoTitle);
+        autoInfo.addView(tAutoSub);
+        autoRow.addView(autoInfo, lp(0, W, 1f));
+
+        Switch swAutoObd = new Switch(this);
+        swAutoObd.setChecked(autoEnabled);
+        swAutoObd.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.edit().putBoolean("auto_obd_connect", isChecked).apply();
+                obd.autoConnect = isChecked;
+                tAutoSub.setText(isChecked ? "Automatically reconnects to OBD-II scanner in background" : "Manual mode: Tap [CONNECT OBD] when scanner is plugged in");
+                if (isChecked) {
+                    obd.reconnectNow();
+                    toast("Auto-connect OBD enabled");
+                } else {
+                    toast("Auto-connect OBD disabled (manual connect only)");
+                    updateObdStatusCard();
+                }
+            }
+        });
+        autoRow.addView(swAutoObd, new LinearLayout.LayoutParams(W, W));
+
+        LinearLayout.LayoutParams arlp = new LinearLayout.LayoutParams(M, W);
+        arlp.topMargin = dp(2);
+        arlp.bottomMargin = dp(8);
+        card.addView(autoRow, arlp);
 
         // Phone Audio & Calls Section Card (Directly clickable!)
         LinearLayout phoneCard = new LinearLayout(this);

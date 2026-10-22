@@ -16,7 +16,7 @@ import java.util.UUID;
  * Minimal Bluetooth ELM327 reader (classic SPP). Looks for a PAIRED device whose
  * name contains OBD / ELM / LINK. Polls RPM, speed, coolant temp, battery volts,
  * ATF (transmission) temperature, fuel level, and diagnostic trouble codes (DTCs).
- * Runs on its own thread; does nothing if no scanner is paired or in range.
+ * Runs on its own thread; detects scanner detachment promptly and supports auto-connect toggle.
  */
 public class ObdManager {
     private static final UUID SPP = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
@@ -29,6 +29,9 @@ public class ObdManager {
     public volatile String connectedDeviceName = "";
     public volatile String manualDeviceAddress;
     public volatile String statusMessage = "Disconnected";
+
+    public volatile boolean autoConnect = true;          // Toggleable auto-connect
+    public volatile boolean manualConnectRequested = false; // User tapped [CONNECT OBD]
 
     public volatile boolean connected;
     public volatile int rpm = -1, coolant = -999, speed = -1, load = -1;
@@ -54,10 +57,22 @@ public class ObdManager {
     }
 
     public synchronized void reconnectNow() {
+        manualConnectRequested = true;
         running = false;
         gen++;
         closeQuietly(sock);
         start();
+    }
+
+    public synchronized void onDeviceDisconnected(String address) {
+        if (connected && sock != null) {
+            try {
+                BluetoothDevice d = sock.getRemoteDevice();
+                if (d != null && address != null && address.equalsIgnoreCase(d.getAddress())) {
+                    closeQuietly(sock);
+                }
+            } catch (Throwable ignore) { }
+        }
     }
 
     public synchronized void start() {
@@ -77,6 +92,15 @@ public class ObdManager {
     private void loop(int id) {
         while (alive(id)) {
             try {
+                if (!autoConnect && !manualConnectRequested) {
+                    state = STATE_DISCONNECTED;
+                    connected = false;
+                    statusMessage = "Auto-connect disabled (tap 'CONNECT OBD' to connect)";
+                    try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+                    continue;
+                }
+                manualConnectRequested = false;
+
                 BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
                 BluetoothDevice dev = null;
                 if (ad != null && ad.isEnabled()) {
@@ -138,14 +162,12 @@ public class ObdManager {
                 boolean hasFuel = false, hasAtf5C = false, hasAtfB4 = false;
                 String r = send(in, out, "0100", 3000);
                 int sup = hex(r, "4100", 4);
-                // PID 04=load (bit 28), 05=coolant (bit 27), 0C=RPM (bit 20), 0D=speed (bit 19)
-                // All core PIDs are in 01-20 range — already known to work
 
                 // PID 0x20 returns bitmask of PIDs 21-40 support
                 r = send(in, out, "0120", 3000);
                 sup = hex(r, "4120", 4);
                 if (sup >= 0) {
-                    // PID 2F = fuel level (bit 17 in the 21-40 bitmask, i.e. PID 0x2F = 47 - 32 = bit 15 from left)
+                    // PID 2F = fuel level (bit 17 in the 21-40 bitmask)
                     hasFuel = (sup & (1 << (32 - (0x2F - 0x20)))) != 0;
                 }
 
@@ -159,7 +181,6 @@ public class ObdManager {
 
                 // If 5C not supported, check extended range for non-standard B4
                 if (!hasAtf5C) {
-                    // PID 0xA0 returns bitmask of PIDs A1-C0
                     r = send(in, out, "01A0", 3000);
                     sup = hex(r, "41A0", 4);
                     if (sup >= 0) {
@@ -175,13 +196,13 @@ public class ObdManager {
 
                 while (alive(id)) {
                     // ---- Core fast-poll PIDs (always supported) ----
-                    r = send(in, out, "010C", 2000);
+                    r = send(in, out, "010C", 1500);
                     int v = hex(r, "410C", 2); if (v >= 0) rpm = v / 4;
-                    r = send(in, out, "010D", 2000);
+                    r = send(in, out, "010D", 1500);
                     v = hex(r, "410D", 1); if (v >= 0) speed = v;
-                    r = send(in, out, "0105", 2000);
+                    r = send(in, out, "0105", 1500);
                     v = hex(r, "4105", 1); if (v >= 0) coolant = v - 40;
-                    r = send(in, out, "0104", 2000);
+                    r = send(in, out, "0104", 1500);
                     v = hex(r, "4104", 1); if (v >= 0) load = v * 100 / 255;
                     r = send(in, out, "ATRV", 1500);
                     try { volts = Float.parseFloat(r.replace("ATRV", "").replace("V", "")); }
@@ -191,18 +212,18 @@ public class ObdManager {
                     if (loopCount % 5 == 0) {
                         // Fuel level
                         if (hasFuel) {
-                            r = send(in, out, "012F", 2000);
+                            r = send(in, out, "012F", 1500);
                             v = hex(r, "412F", 1);
                             if (v >= 0) fuelLevel = v * 100f / 255f;
                         }
 
                         // ATF / transmission oil temp
                         if (hasAtf5C) {
-                            r = send(in, out, "015C", 2000);
+                            r = send(in, out, "015C", 1500);
                             v = hex(r, "415C", 1);
                             if (v >= 0) atfTemp = v - 40;
                         } else if (hasAtfB4) {
-                            r = send(in, out, "01B4", 2000);
+                            r = send(in, out, "01B4", 1500);
                             v = hex(r, "41B4", 1);
                             if (v >= 0) atfTemp = v - 40;
                         }
@@ -210,7 +231,7 @@ public class ObdManager {
 
                     // ---- DTC scan (every 20th cycle ≈ 10 sec) ----
                     if (loopCount % DTC_INTERVAL == 0) {
-                        r = send(in, out, "03", 4000);
+                        r = send(in, out, "03", 3000);
                         dtcCodes = parseDtc(r);
                         dtcScanned = true;
                     }
@@ -221,7 +242,7 @@ public class ObdManager {
             } catch (InterruptedException e) {
                 return;
             } catch (Exception e) {
-                statusMessage = "Connection error (" + (e.getMessage() != null ? e.getMessage() : "socket closed") + "). Retrying...";
+                statusMessage = "Disconnected: " + (e.getMessage() != null ? e.getMessage() : "scanner detached");
             } finally {
                 connected = false;
                 state = STATE_DISCONNECTED;
@@ -233,7 +254,7 @@ public class ObdManager {
                 dtcCodes = new ArrayList<>(); dtcScanned = false;
                 closeQuietly(sock);
             }
-            try { Thread.sleep(4000); } catch (InterruptedException e) { return; }
+            try { Thread.sleep(autoConnect ? 3000 : 1000); } catch (InterruptedException e) { return; }
         }
     }
 
@@ -246,7 +267,6 @@ public class ObdManager {
      */
     private List<String> parseDtc(String raw) {
         List<String> result = new ArrayList<>();
-        // Remove header "43" and any "NODATA" / "SEARCHING"
         if (raw.contains("NODATA") || raw.contains("ERROR") || !raw.contains("43")) {
             return result;
         }
@@ -262,7 +282,6 @@ public class ObdManager {
                 int code = Integer.parseInt(chunk, 16);
                 if (code == 0) continue;
 
-                // First 2 bits = letter, next 2 bits = first digit, remaining 12 bits = last 3 digits
                 char letter;
                 switch ((code >> 14) & 0x03) {
                     case 0: letter = 'P'; break;   // Powertrain
@@ -296,14 +315,24 @@ public class ObdManager {
         out.flush();
         StringBuilder sb = new StringBuilder();
         long end = System.currentTimeMillis() + timeoutMs;
+        boolean gotPrompt = false;
         while (System.currentTimeMillis() < end) {
             if (in.available() > 0) {
                 int b = in.read();
-                if (b == '>') break;
+                if (b < 0) {
+                    throw new IOException("OBD stream closed (EOF)");
+                }
+                if (b == '>') {
+                    gotPrompt = true;
+                    break;
+                }
                 sb.append((char) b);
             } else {
                 Thread.sleep(10);
             }
+        }
+        if (!gotPrompt) {
+            throw new IOException("No response from OBD adapter (scanner disconnected)");
         }
         return sb.toString().replace("\r", "").replace("\n", "").replace(" ", "").toUpperCase(Locale.US);
     }
@@ -321,4 +350,3 @@ public class ObdManager {
         if (s != null) try { s.close(); } catch (IOException ignore) { }
     }
 }
-

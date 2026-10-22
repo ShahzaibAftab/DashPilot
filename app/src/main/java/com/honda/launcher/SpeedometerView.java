@@ -1,5 +1,10 @@
 package com.honda.launcher;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
+import android.animation.Keyframe;
+import android.animation.PropertyValuesHolder;
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -10,10 +15,11 @@ import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.SystemClock;
 import android.view.View;
+import android.view.animation.AccelerateDecelerateInterpolator;
 
 /**
  * Racing-style gauge: 0-200 km/h dial with ticks, red zone, glowing progress arc,
- * tapered needle, italic digital speed and a 12-light shift bar.
+ * tapered needle, italic digital speed, and startup needle sweep (0 to 200 km/h and back).
  * The dial face (ticks, numbers, red zone) is drawn once into a bitmap, so each frame
  * only draws the arc, needle and number. Drawn in a 300x300 unit space, scaled to fit.
  */
@@ -28,10 +34,12 @@ public class SpeedometerView extends View {
     private boolean animating, warn;
     private float lastS, accel;       // accel in km/h per second
     private long lastT;
-    private final float[] hsv = {0f, 1f, 1f};
+    private boolean isSweeping = false;
+    private ValueAnimator sweepAnim;
 
     private final Runnable step = new Runnable() {
         @Override public void run() {
+            if (isSweeping) return;
             float d = target - shown;
             if (Math.abs(d) < 0.05f) { shown = target; animating = false; }
             else { shown += d * 0.25f; postOnAnimation(this); }
@@ -43,6 +51,54 @@ public class SpeedometerView extends View {
         super(c);
         txt.setTextAlign(Paint.Align.CENTER);
         needle.moveTo(168, 145); needle.lineTo(262, 150); needle.lineTo(168, 155); needle.close();
+        setClickable(true);
+        setOnClickListener(new OnClickListener() {
+            @Override public void onClick(View v) {
+                startNeedleSweep();
+            }
+        });
+    }
+
+    /**
+     * Startup needle sweep: needle sweeps 0 to 200 km/h and back with a luminous glow,
+     * like a real sports car cluster (Honda Type R / STI / Porsche).
+     */
+    public void startNeedleSweep() {
+        if (sweepAnim != null) {
+            sweepAnim.cancel();
+        }
+        isSweeping = true;
+        // Keyframes:
+        // 0.00: 0 km/h
+        // 0.45: 200 km/h (accelerates and sweeps to redline in ~720ms)
+        // 0.55: 200 km/h (holds at redline peak for ~160ms with full glow)
+        // 1.00: 0 km/h (smoothly returns back to rest in ~720ms)
+        Keyframe k0 = Keyframe.ofFloat(0f, 0f);
+        Keyframe k1 = Keyframe.ofFloat(0.45f, MAX);
+        Keyframe k2 = Keyframe.ofFloat(0.55f, MAX);
+        Keyframe k3 = Keyframe.ofFloat(1.0f, 0f);
+        PropertyValuesHolder pvh = PropertyValuesHolder.ofKeyframe("speed", k0, k1, k2, k3);
+        sweepAnim = ValueAnimator.ofPropertyValuesHolder(pvh);
+        sweepAnim.setDuration(1600);
+        sweepAnim.setInterpolator(new AccelerateDecelerateInterpolator());
+        sweepAnim.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override public void onAnimationUpdate(ValueAnimator animation) {
+                shown = (Float) animation.getAnimatedValue();
+                invalidate();
+            }
+        });
+        sweepAnim.addListener(new AnimatorListenerAdapter() {
+            @Override public void onAnimationEnd(Animator animation) {
+                isSweeping = false;
+                shown = target;
+                if (!animating && Math.abs(target - shown) > 0.05f) {
+                    animating = true;
+                    postOnAnimation(step);
+                }
+                invalidate();
+            }
+        });
+        sweepAnim.start();
     }
 
     private static int ramp(float t) {
@@ -67,6 +123,7 @@ public class SpeedometerView extends View {
             lastS = s; lastT = now;
         }
         target = s;
+        if (isSweeping) return;
         if (!animating) { animating = true; postOnAnimation(step); }
     }
 
@@ -116,22 +173,37 @@ public class SpeedometerView extends View {
         float f = Math.min(shown, MAX) / MAX;
         // Type R colour: white when calm, towards red with speed and hard acceleration
         float push = Math.max(0f, Math.min(accel / 15f, 1f));
-        float t = shown > 160 ? 1f : Math.min(1f, shown / 170f * 0.65f + push * 0.5f);
+        float t = isSweeping
+                ? Math.min(1f, (shown / MAX) * 1.15f)
+                : (shown > 160 ? 1f : Math.min(1f, shown / 170f * 0.65f + push * 0.5f));
         int col = ramp(t);
 
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeCap(Paint.Cap.ROUND);
         if (f > 0.003f) {
-            p.setStrokeWidth(16);
-            p.setColor((col & 0x00FFFFFF) | 0x38000000);   // soft glow
+            // Enhanced multi-layer glow: outer halo + intense mid + crisp core
+            p.setStrokeWidth(24);
+            p.setColor((col & 0x00FFFFFF) | 0x22000000);   // wide sports atmospheric halo
             c.drawArc(rect, 135, 270 * f, false, p);
+
+            p.setStrokeWidth(12);
+            p.setColor((col & 0x00FFFFFF) | 0x4D000000);   // intense core glow
+            c.drawArc(rect, 135, 270 * f, false, p);
+
             p.setStrokeWidth(6);
-            p.setColor(col);
+            p.setColor(col);                               // solid core arc
             c.drawArc(rect, 135, 270 * f, false, p);
         }
 
         c.save();
         c.rotate(135 + 270 * f, 150, 150);
+        // Needle luminous glow
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(4);
+        p.setColor((col & 0x00FFFFFF) | 0x44000000);
+        c.drawPath(needle, p);
+
+        // Needle body
         p.setStyle(Paint.Style.FILL);
         p.setColor(col);
         c.drawPath(needle, p);
@@ -152,6 +224,5 @@ public class SpeedometerView extends View {
         txt.setColor(0xFF9AA5B1);
         txt.setTextSize(14);
         c.drawText("km/h", 150, 285, txt);
-
     }
 }
