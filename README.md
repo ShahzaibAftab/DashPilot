@@ -1,6 +1,6 @@
-# DashPilot (Honda Launcher)
+# DashPilot (for CAR LCD Modules)
 
-A racing-inspired Android launcher and telemetry dashboard designed for vehicle head units (e.g., Honda head units).
+A extremely lightweight Android launcher and telemetry dashboard designed for vehicle head units (e.g., Honda,Toyota,Suzuki,Mitsubishi head units).
 
 ## Features
 - **High-Performance Speedometer**: Racing-style 0–200 km/h dial with Type-R color styling, smooth needle sweep, and acceleration sensing.
