@@ -92,7 +92,7 @@ public class MainActivity extends Activity implements LocationListener {
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.getDefault());
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("EEE, d MMM", Locale.getDefault());
 
-    private TextView clock, date, nowPlaying, tmVal, tmBest;
+    private TextView clock, date, nowPlaying, tmVal, tmBest, battHealthText;
     private View tmBox;
     private SpeedometerView speedo;
     private AuroraView aurora;
@@ -326,6 +326,10 @@ public class MainActivity extends Activity implements LocationListener {
             dtcWarning.setCodes(new ArrayList<String>());
             speedo.setWarn(false);
             aurora.setDanger(false);
+            if (battHealthText != null && battHealthText.getVisibility() == View.VISIBLE) {
+                battHealthText.setText("HEALTH: -- • LIFE: --");
+                battHealthText.setTextColor(0x8CFFFFFF);
+            }
             updateGaugeBadges();
             return;
         }
@@ -355,6 +359,10 @@ public class MainActivity extends Activity implements LocationListener {
 
         boolean battBad = gBatt.setValue((!sBatt || obd.volts < 0) ? Float.NaN : obd.volts);
         if (sBatt) bad |= battBad;
+        if (battHealthText != null && battHealthText.getVisibility() == View.VISIBLE) {
+            battHealthText.setText(getBatteryHealthText(obd.volts));
+            battHealthText.setTextColor(getBatteryHealthColor(obd.volts));
+        }
 
         boolean loadBad = gLoad.setValue((!sLoad || obd.load < 0) ? Float.NaN : obd.load);
         if (sLoad) bad |= loadBad;
@@ -475,25 +483,67 @@ public class MainActivity extends Activity implements LocationListener {
         }
     }
 
+    private String getBatteryHealthText(float volts) {
+        if (Float.isNaN(volts) || volts <= 0) {
+            return "HEALTH: -- • LIFE: --";
+        }
+        int pct;
+        String life;
+        if (volts >= 13.5f) {
+            // Engine running & alternator charging
+            if (volts >= 13.8f && volts <= 14.6f) {
+                pct = Math.min(99, Math.round(92f + (volts - 13.8f) * 7.5f));
+                life = "Good (~2.5-3 yrs)";
+            } else if (volts > 14.6f) {
+                pct = 82;
+                life = "High (~1-2 yrs)";
+            } else {
+                pct = Math.round(75f + (volts - 13.5f) * 50f);
+                life = "Moderate (~1.5 yrs)";
+            }
+        } else {
+            // Resting voltage / accessory mode (11.5V - 12.8V)
+            float frac = (volts - 11.5f) / (12.8f - 11.5f);
+            pct = Math.max(10, Math.min(100, Math.round(frac * 100f)));
+            if (pct >= 85) life = "Good (~2.5-3 yrs)";
+            else if (pct >= 65) life = "Fair (~1.5-2 yrs)";
+            else if (pct >= 45) life = "Weak (~6-12 mos)";
+            else life = "Replace Soon";
+        }
+        return String.format(Locale.US, "HEALTH: %d%% • %s", pct, life);
+    }
+
+    private int getBatteryHealthColor(float volts) {
+        if (Float.isNaN(volts) || volts <= 0) return 0x8CFFFFFF;
+        if (volts >= 13.5f && volts <= 14.7f) return 0xFF00E676; // Green
+        if (volts >= 12.3f) return 0xFF00E676; // Green
+        if (volts >= 11.9f) return 0xFFFFD600; // Yellow
+        return 0xFFFF1744; // Red
+    }
+
     private void applyGaugeToggles() {
         boolean sRpm = prefs.getBoolean("show_rpm", true);
         boolean sCool = prefs.getBoolean("show_coolant", true);
         boolean sBatt = prefs.getBoolean("show_battery", true);
+        boolean sBattHealth = prefs.getBoolean("show_batt_health", true);
         boolean sLoad = prefs.getBoolean("show_load", true);
         boolean sAtf = prefs.getBoolean("show_atf", true);
         boolean sFuel = prefs.getBoolean("show_fuel", true);
         boolean sDtc = prefs.getBoolean("show_dtc", true);
         boolean sTm = prefs.getBoolean("timer_on", true);
+        boolean eco = prefs.getBoolean("eco_mode", false);
 
-        if (gRpm != null) gRpm.setVisibility(sRpm ? View.VISIBLE : View.GONE);
-        if (gTemp != null) gTemp.setVisibility(sCool ? View.VISIBLE : View.GONE);
+        if (speedo != null) speedo.setEcoMode(eco);
+        if (gRpm != null) { gRpm.setEcoMode(eco); gRpm.setVisibility(sRpm ? View.VISIBLE : View.GONE); }
+        if (gTemp != null) { gTemp.setEcoMode(eco); gTemp.setVisibility(sCool ? View.VISIBLE : View.GONE); }
         if (row1 != null) row1.setVisibility((sRpm || sCool) ? View.VISIBLE : View.GONE);
 
-        if (gBatt != null) gBatt.setVisibility(sBatt ? View.VISIBLE : View.GONE);
-        if (gLoad != null) gLoad.setVisibility(sLoad ? View.VISIBLE : View.GONE);
+        if (gBatt != null) { gBatt.setEcoMode(eco); gBatt.setVisibility(sBatt ? View.VISIBLE : View.GONE); }
+        if (battHealthText != null) battHealthText.setVisibility((sBatt && sBattHealth) ? View.VISIBLE : View.GONE);
+        if (gLoad != null) { gLoad.setEcoMode(eco); gLoad.setVisibility(sLoad ? View.VISIBLE : View.GONE); }
         if (row2 != null) row2.setVisibility((sBatt || sLoad) ? View.VISIBLE : View.GONE);
 
-        if (gAtf != null) gAtf.setVisibility(sAtf ? View.VISIBLE : View.GONE);
+        if (gAtf != null) { gAtf.setEcoMode(eco); gAtf.setVisibility(sAtf ? View.VISIBLE : View.GONE); }
         if (fuelGauge != null) fuelGauge.setVisibility(sFuel ? View.VISIBLE : View.GONE);
         if (dtcWarning != null) dtcWarning.setVisibility(sDtc ? View.VISIBLE : View.GONE);
         if (row3 != null) row3.setVisibility((sAtf || sFuel || sDtc) ? View.VISIBLE : View.GONE);
@@ -1377,6 +1427,7 @@ public class MainActivity extends Activity implements LocationListener {
         list.addView(gaugeCard("ENGINE RPM GAUGE", "0–8000 RPM dial (PID 010C)", "show_rpm", null));
         list.addView(gaugeCard("COOLANT TEMPERATURE", "Engine block temperature (PID 0105)", "show_coolant", null));
         list.addView(gaugeCard("BATTERY VOLTAGE", "Alternator & battery health (ATRV)", "show_battery", null));
+        list.addView(gaugeCard("BATTERY HEALTH & LIFE", "Estimated battery health % & remaining lifespan below gauge", "show_batt_health", null));
         list.addView(gaugeCard("ENGINE LOAD", "Real-time engine capacity load (PID 0104)", "show_load", null));
         list.addView(gaugeCard("ATF TRANSMISSION TEMP", "Automatic / CVT transmission fluid temp", "show_atf", bAtf));
         badgeAtf = bAtf[0];
@@ -1384,6 +1435,14 @@ public class MainActivity extends Activity implements LocationListener {
         badgeFuel = bFuel[0];
         list.addView(gaugeCard("DTC TROUBLE WARNING", "Check engine warning & diagnostic codes (Mode 03)", "show_dtc", null));
         list.addView(gaugeCard("0–100 KM/H LAUNCH TIMER", "Automatic launch acceleration timer", "timer_on", null));
+
+        TextView tModesHeader = label(16, 0xFFFFFFFF);
+        tModesHeader.setText("DISPLAY & THEME MODES");
+        tModesHeader.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        tModesHeader.setPadding(dp(2), dp(14), 0, dp(8));
+        list.addView(tModesHeader);
+
+        list.addView(gaugeCard("ECO / COMFORT MODE", "Dynamic color feedback: Green (safe/eco), Yellow (warning), Red (danger)", "eco_mode", null));
 
         sv.addView(list);
         root.addView(sv, lp(M, 0, 1f));
@@ -1837,7 +1896,23 @@ public class MainActivity extends Activity implements LocationListener {
         gAtf  = new MiniGaugeView(this, "ATF TEMP", "\u00B0C", 20, 150, 110, 130, Float.NaN, Float.NaN, 0);
 
         row1 = row(gRpm, gTemp);
-        row2 = row(gBatt, gLoad);
+
+        LinearLayout battCol = new LinearLayout(this);
+        battCol.setOrientation(LinearLayout.VERTICAL);
+        battCol.setGravity(Gravity.CENTER_HORIZONTAL);
+        battCol.addView(gBatt, lp(M, 0, 1f));
+
+        battHealthText = label(10, 0xFF00E676);
+        battHealthText.setGravity(Gravity.CENTER);
+        battHealthText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        battHealthText.setText("HEALTH: -- • LIFE: --");
+        battHealthText.setPadding(0, 0, 0, dp(2));
+        battCol.addView(battHealthText, new LinearLayout.LayoutParams(M, W));
+
+        row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        row2.addView(battCol, lp(0, M, 1f));
+        row2.addView(gLoad,   lp(0, M, 1f));
 
         // Third row: ATF temp gauge + fuel gauge + DTC warning
         fuelGauge  = new FuelGaugeView(this);

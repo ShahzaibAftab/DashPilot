@@ -101,6 +101,23 @@ public class SpeedometerView extends View {
         sweepAnim.start();
     }
 
+    private boolean ecoMode = false;
+
+    public void setEcoMode(boolean eco) {
+        if (this.ecoMode != eco) {
+            this.ecoMode = eco;
+            invalidate();
+        }
+    }
+
+    private static int blendColor(int a, int b, float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        int rr = (int) (((a >> 16) & 0xFF) + (((b >> 16) & 0xFF) - ((a >> 16) & 0xFF)) * t);
+        int gg = (int) (((a >>  8) & 0xFF) + (((b >>  8) & 0xFF) - ((a >>  8) & 0xFF)) * t);
+        int bb = (int) (( a        & 0xFF) + (( b        & 0xFF) - ( a        & 0xFF)) * t);
+        return 0xFF000000 | (rr << 16) | (gg << 8) | bb;
+    }
+
     private static int ramp(float t) {
         final int[] st = {0xFFF2F2F2, 0xFFFF6B5E, 0xFFFF1F2D};   // white -> salmon -> red
         float x = t * 2f;
@@ -171,12 +188,29 @@ public class SpeedometerView extends View {
         c.scale(u, u);
 
         float f = Math.min(shown, MAX) / MAX;
-        // Type R colour: white when calm, towards red with speed and hard acceleration
-        float push = Math.max(0f, Math.min(accel / 15f, 1f));
-        float t = isSweeping
-                ? Math.min(1f, (shown / MAX) * 1.15f)
-                : (shown > 160 ? 1f : Math.min(1f, shown / 170f * 0.65f + push * 0.5f));
-        int col = ramp(t);
+        int col;
+        if (ecoMode && !isSweeping) {
+            // Eco / Comfort Mode:
+            // 0 - 80 km/h: Honda Eco Green (Safe / cruising)
+            // 80 - 120 km/h: Warning Yellow
+            // > 120 km/h: Danger Red
+            if (shown >= 120f) {
+                col = 0xFFFF1744; // Red
+            } else if (shown >= 80f) {
+                float tr = (shown - 80f) / 40f;
+                col = blendColor(0xFFFFD600, 0xFFFF1744, tr); // Yellow -> Red
+            } else {
+                float tr = Math.min(1f, shown / 80f);
+                col = blendColor(0xFF00E676, 0xFFFFD600, tr * 0.35f); // Green -> slight warm
+            }
+        } else {
+            // Type R colour: white when calm, towards red with speed and hard acceleration
+            float push = Math.max(0f, Math.min(accel / 15f, 1f));
+            float t = isSweeping
+                    ? Math.min(1f, (shown / MAX) * 1.15f)
+                    : (shown > 160 ? 1f : Math.min(1f, shown / 170f * 0.65f + push * 0.5f));
+            col = ramp(t);
+        }
 
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeCap(Paint.Cap.ROUND);
@@ -218,7 +252,13 @@ public class SpeedometerView extends View {
         c.drawCircle(150, 150, 13, p);
 
         txt.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
-        txt.setColor(warn ? 0xFFFF1744 : 0xFFFFFFFF);
+        if (warn) {
+            txt.setColor(0xFFFF1744);
+        } else if (ecoMode && shown > 0.5f && !isSweeping) {
+            txt.setColor(col);
+        } else {
+            txt.setColor(0xFFFFFFFF);
+        }
         txt.setTextSize(62);
         c.drawText(String.valueOf((int) shown), 150, 262, txt);
         txt.setColor(0xFF9AA5B1);
