@@ -157,10 +157,27 @@ public class MainActivity extends Activity implements LocationListener {
                 try {
                     BluetoothDevice dev = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                     if (dev != null) {
-                        if (lastConnectedPhone != null && dev.getAddress().equalsIgnoreCase(lastConnectedPhone.getAddress())) {
-                            lastConnectedPhone = null;
-                        }
+                        // If the OBD scanner disconnected, let ObdManager know
                         obd.onDeviceDisconnected(dev.getAddress());
+
+                        // If the phone dropped, attempt to auto-reconnect after a
+                        // short delay.  On cheap head units, opening the OBD RFCOMM
+                        // socket can momentarily knock the A2DP link offline.
+                        if (lastConnectedPhone != null && dev.getAddress().equalsIgnoreCase(lastConnectedPhone.getAddress())) {
+                            final BluetoothDevice droppedPhone = lastConnectedPhone;
+                            lastConnectedPhone = null;
+                            final String savedMac = prefs.getString("phone_mac", "");
+                            if (!savedMac.isEmpty() && savedMac.equalsIgnoreCase(dev.getAddress())) {
+                                h.postDelayed(new Runnable() {
+                                    public void run() {
+                                        // Only reconnect if still not connected
+                                        if (getConnectedPhoneDevice() == null) {
+                                            connectPhoneAudio(droppedPhone);
+                                        }
+                                    }
+                                }, 2500);
+                            }
+                        }
                     }
                 } catch (Throwable ignore) { }
             }
@@ -1351,37 +1368,31 @@ public class MainActivity extends Activity implements LocationListener {
 
         final BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
         if (ad != null && ad.isEnabled()) {
-            // 1. Connect A2DP (Media / Music streaming)
-            try {
-                ad.getProfileProxy(getApplicationContext(), new BluetoothProfile.ServiceListener() {
-                    @Override
-                    public void onServiceConnected(int profile, BluetoothProfile proxy) {
-                        try {
-                            Method m = proxy.getClass().getMethod("connect", BluetoothDevice.class);
-                            m.setAccessible(true);
-                            m.invoke(proxy, device);
-                        } catch (Throwable ignore) { }
-                        try { ad.closeProfileProxy(profile, proxy); } catch (Throwable ignore) { }
-                    }
-                    @Override public void onServiceDisconnected(int profile) { }
-                }, BluetoothProfile.A2DP);
-            } catch (Throwable ignore) { }
-
-            // 2. Connect HEADSET (Phone calls)
-            try {
-                ad.getProfileProxy(getApplicationContext(), new BluetoothProfile.ServiceListener() {
-                    @Override
-                    public void onServiceConnected(int profile, BluetoothProfile proxy) {
-                        try {
-                            Method m = proxy.getClass().getMethod("connect", BluetoothDevice.class);
-                            m.setAccessible(true);
-                            m.invoke(proxy, device);
-                        } catch (Throwable ignore) { }
-                        try { ad.closeProfileProxy(profile, proxy); } catch (Throwable ignore) { }
-                    }
-                    @Override public void onServiceDisconnected(int profile) { }
-                }, BluetoothProfile.HEADSET);
-            } catch (Throwable ignore) { }
+            // Profile IDs: A2DP=2, A2DP_SINK=11, HEADSET=1, HEADSET_CLIENT=16
+            // Car head units use SINK/CLIENT profiles; phones use A2DP/HEADSET
+            final int[] profiles = {BluetoothProfile.A2DP, 11, BluetoothProfile.HEADSET, 16};
+            for (final int profileId : profiles) {
+                try {
+                    ad.getProfileProxy(getApplicationContext(), new BluetoothProfile.ServiceListener() {
+                        @Override
+                        public void onServiceConnected(final int profile, final BluetoothProfile proxy) {
+                            try {
+                                Method m = proxy.getClass().getMethod("connect", BluetoothDevice.class);
+                                m.setAccessible(true);
+                                m.invoke(proxy, device);
+                            } catch (Throwable ignore) { }
+                            // Delay proxy close to let connect() actually establish the link.
+                            // Closing immediately can cancel the pending connection on some stacks.
+                            h.postDelayed(new Runnable() {
+                                public void run() {
+                                    try { ad.closeProfileProxy(profile, proxy); } catch (Throwable ignore) { }
+                                }
+                            }, 3000);
+                        }
+                        @Override public void onServiceDisconnected(int profile) { }
+                    }, profileId);
+                } catch (Throwable ignore) { }
+            }
         }
 
         // 3. Broadcast Chinese head unit connection intents (Allwinner T3 / GOCSDK / Syu)
@@ -1408,7 +1419,7 @@ public class MainActivity extends Activity implements LocationListener {
                 updateObdStatusCard();
                 refreshPairedDevicesList();
             }
-        }, 1500);
+        }, 2000);
     }
 
     private void connectFirstPairedPhone() {

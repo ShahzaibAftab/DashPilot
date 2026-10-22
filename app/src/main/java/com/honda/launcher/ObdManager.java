@@ -78,6 +78,18 @@ public class ObdManager {
     private volatile Thread workerThread;
 
     public synchronized void start() {
+        // Guard: if a worker thread is already alive and running for the current gen, skip
+        if (workerThread != null && workerThread.isAlive() && running) {
+            return;
+        }
+        // Stop any orphaned old thread before starting a new one
+        if (workerThread != null && workerThread.isAlive()) {
+            running = false;
+            gen++;
+            closeQuietly(sock);
+            try { workerThread.interrupt(); } catch (Throwable ignore) { }
+            try { workerThread.join(500); } catch (Throwable ignore) { }
+        }
         final int id = ++gen;
         running = true;
         Thread t = new Thread(new Runnable() { public void run() { loop(id); } }, "obd");
@@ -92,6 +104,7 @@ public class ObdManager {
         closeQuietly(sock);
         if (workerThread != null) {
             try { workerThread.interrupt(); } catch (Throwable ignore) { }
+            try { workerThread.join(500); } catch (Throwable ignore) { }
             workerThread = null;
         }
     }
@@ -140,18 +153,34 @@ public class ObdManager {
                         ? dev.getName() : dev.getAddress();
                 statusMessage = "Opening connection to " + connectedDeviceName + "...";
 
-                ad.cancelDiscovery();
+                // Only cancel discovery if actually running — avoids disrupting
+                // existing A2DP / phone audio profiles on the same BT adapter
+                if (ad.isDiscovering()) {
+                    ad.cancelDiscovery();
+                }
+
+                // Brief settle time: let BT stack stabilise any existing A2DP/HFP
+                // connection before we open a new RFCOMM socket
+                Thread.sleep(150);
+
                 BluetoothSocket s = dev.createRfcommSocketToServiceRecord(SPP);
                 sock = s;
                 try {
                     s.connect();
                 } catch (IOException e) {
                     closeQuietly(s);
+                    // Small gap so we don't hammer the radio and drop phone audio
+                    Thread.sleep(200);
                     s = (BluetoothSocket) dev.getClass().getMethod("createRfcommSocket", int.class)
                             .invoke(dev, 1);
                     sock = s;
                     s.connect();
                 }
+
+                // Post-connect settle: give BT stack time to multiplex the new
+                // SPP channel alongside any active A2DP stream
+                Thread.sleep(100);
+
                 InputStream in = s.getInputStream();
                 OutputStream out = s.getOutputStream();
 
