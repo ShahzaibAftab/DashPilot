@@ -274,37 +274,23 @@ public class MainActivity extends Activity implements LocationListener {
 
     private void updateGaugeBadges() {
         if (badgeAtf != null) {
-            if (obd.connected) {
-                if (obd.hasAtfSupported) {
-                    badgeAtf.setText("SUPPORTED (PID 015C)");
-                    badgeAtf.setTextColor(GREEN);
-                    badgeAtf.setBackground(badgeShape(0x3300E676));
-                } else {
-                    badgeAtf.setText("NOT SUPPORTED BY ECU (Honda CAN required)");
-                    badgeAtf.setTextColor(AMBER);
-                    badgeAtf.setBackground(badgeShape(0x33FFB300));
-                }
+            if (obd.connected && obd.pidsDetected && !obd.hasAtfSupported) {
+                badgeAtf.setVisibility(View.VISIBLE);
+                badgeAtf.setText(" NOT SUPPORTED BY ECU ");
+                badgeAtf.setTextColor(AMBER);
+                badgeAtf.setBackground(badgeShape(0x33FFB300));
             } else {
-                badgeAtf.setText("REQUIRES OBD2 (PID 015C / 01B4)");
-                badgeAtf.setTextColor(GREY);
-                badgeAtf.setBackground(badgeShape(0x3390A4AE));
+                badgeAtf.setVisibility(View.GONE);
             }
         }
         if (badgeFuel != null) {
-            if (obd.connected) {
-                if (obd.hasFuelSupported) {
-                    badgeFuel.setText("SUPPORTED (PID 012F)");
-                    badgeFuel.setTextColor(GREEN);
-                    badgeFuel.setBackground(badgeShape(0x3300E676));
-                } else {
-                    badgeFuel.setText("NOT SUPPORTED BY ECU (Reserve sensor only)");
-                    badgeFuel.setTextColor(AMBER);
-                    badgeFuel.setBackground(badgeShape(0x33FFB300));
-                }
+            if (obd.connected && obd.pidsDetected && !obd.hasFuelSupported) {
+                badgeFuel.setVisibility(View.VISIBLE);
+                badgeFuel.setText(" NOT SUPPORTED BY ECU ");
+                badgeFuel.setTextColor(AMBER);
+                badgeFuel.setBackground(badgeShape(0x33FFB300));
             } else {
-                badgeFuel.setText("REQUIRES OBD2 (PID 012F)");
-                badgeFuel.setTextColor(GREY);
-                badgeFuel.setBackground(badgeShape(0x3390A4AE));
+                badgeFuel.setVisibility(View.GONE);
             }
         }
     }
@@ -564,24 +550,23 @@ public class MainActivity extends Activity implements LocationListener {
         TextView[] bAtf = new TextView[1];
         TextView[] bFuel = new TextView[1];
 
-        list.addView(gaugeCard("ENGINE RPM GAUGE", "0–8000 RPM dial (PID 010C)", "SUPPORTED", GREEN, "show_rpm", null));
-        list.addView(gaugeCard("COOLANT TEMPERATURE", "Engine block temperature (PID 0105)", "SUPPORTED", GREEN, "show_coolant", null));
-        list.addView(gaugeCard("BATTERY VOLTAGE", "Alternator & battery health (ATRV)", "SUPPORTED", GREEN, "show_battery", null));
-        list.addView(gaugeCard("ENGINE LOAD", "Real-time engine capacity load (PID 0104)", "SUPPORTED", GREEN, "show_load", null));
-        list.addView(gaugeCard("ATF TRANSMISSION TEMP", "Automatic / CVT transmission fluid temp", "REQUIRES OBD2", GREY, "show_atf", bAtf));
+        list.addView(gaugeCard("ENGINE RPM GAUGE", "0–8000 RPM dial (PID 010C)", "show_rpm", null));
+        list.addView(gaugeCard("COOLANT TEMPERATURE", "Engine block temperature (PID 0105)", "show_coolant", null));
+        list.addView(gaugeCard("BATTERY VOLTAGE", "Alternator & battery health (ATRV)", "show_battery", null));
+        list.addView(gaugeCard("ENGINE LOAD", "Real-time engine capacity load (PID 0104)", "show_load", null));
+        list.addView(gaugeCard("ATF TRANSMISSION TEMP", "Automatic / CVT transmission fluid temp", "show_atf", bAtf));
         badgeAtf = bAtf[0];
-        list.addView(gaugeCard("FUEL TANK LEVEL", "Liquid animated tank & remaining percentage", "REQUIRES OBD2", GREY, "show_fuel", bFuel));
+        list.addView(gaugeCard("FUEL TANK LEVEL", "Liquid animated tank & remaining percentage", "show_fuel", bFuel));
         badgeFuel = bFuel[0];
-        list.addView(gaugeCard("DTC TROUBLE WARNING", "Check engine warning & diagnostic codes (Mode 03)", "SUPPORTED", GREEN, "show_dtc", null));
-        list.addView(gaugeCard("0–100 KM/H LAUNCH TIMER", "Automatic launch acceleration timer", "SUPPORTED", GREEN, "timer_on", null));
+        list.addView(gaugeCard("DTC TROUBLE WARNING", "Check engine warning & diagnostic codes (Mode 03)", "show_dtc", null));
+        list.addView(gaugeCard("0–100 KM/H LAUNCH TIMER", "Automatic launch acceleration timer", "timer_on", null));
 
         sv.addView(list);
         root.addView(sv, lp(M, 0, 1f));
         return root;
     }
 
-    private View gaugeCard(String title, String subtitle, String statusText, int statusColor,
-                           final String prefKey, TextView[] outBadge) {
+    private View gaugeCard(String title, String subtitle, final String prefKey, TextView[] outBadge) {
         final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.HORIZONTAL);
@@ -604,22 +589,23 @@ public class MainActivity extends Activity implements LocationListener {
         TextView tSub = label(12, 0x8CFFFFFF);
         tSub.setText(subtitle);
 
-        TextView tBadge = label(11, statusColor);
-        tBadge.setText(" " + statusText + " ");
-        tBadge.setTypeface(Typeface.DEFAULT_BOLD);
-        tBadge.setBackground(badgeShape((statusColor & 0x00FFFFFF) | 0x26000000));
-        tBadge.setPadding(dp(6), dp(2), dp(6), dp(2));
-
-        if (outBadge != null) outBadge[0] = tBadge;
-
-        LinearLayout badgeRow = new LinearLayout(this);
-        badgeRow.setOrientation(LinearLayout.HORIZONTAL);
-        badgeRow.setPadding(0, dp(4), 0, 0);
-        badgeRow.addView(tBadge);
-
         col.addView(tTitle);
         col.addView(tSub);
-        col.addView(badgeRow);
+
+        // Only add badge view if this sensor can be unsupported
+        if (outBadge != null) {
+            TextView tBadge = label(11, AMBER);
+            tBadge.setTypeface(Typeface.DEFAULT_BOLD);
+            tBadge.setPadding(dp(6), dp(2), dp(6), dp(2));
+            tBadge.setVisibility(View.GONE); // Hidden by default, only shown if unsupported
+            outBadge[0] = tBadge;
+
+            LinearLayout badgeRow = new LinearLayout(this);
+            badgeRow.setOrientation(LinearLayout.HORIZONTAL);
+            badgeRow.setPadding(0, dp(4), 0, 0);
+            badgeRow.addView(tBadge);
+            col.addView(badgeRow);
+        }
 
         card.addView(col, lp(0, W, 1f));
 
