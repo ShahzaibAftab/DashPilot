@@ -101,7 +101,12 @@ public class SpeedometerView extends View {
         sweepAnim.start();
     }
 
+    public static final int THEME_TYPER = 0;
+    public static final int THEME_SAPPHIRE = 1;
+    public static final int THEME_ONYX = 2;
+
     private boolean ecoMode = false;
+    private int theme = THEME_TYPER;
 
     public void setEcoMode(boolean eco) {
         if (this.ecoMode != eco) {
@@ -109,6 +114,18 @@ public class SpeedometerView extends View {
             invalidate();
         }
     }
+
+    public void setTheme(int theme) {
+        if (this.theme != theme) {
+            this.theme = theme;
+            if (getWidth() > 0 && getHeight() > 0) {
+                onSizeChanged(getWidth(), getHeight(), getWidth(), getHeight());
+            }
+            invalidate();
+        }
+    }
+
+    public int getTheme() { return theme; }
 
     private static int blendColor(int a, int b, float t) {
         t = Math.max(0f, Math.min(1f, t));
@@ -123,11 +140,23 @@ public class SpeedometerView extends View {
         float x = t * 2f;
         int i = Math.min((int) x, 1);
         float f = x - i;
-        int a = st[i], b = st[i + 1];
-        return Color.rgb(
-                (int) (((a >> 16) & 255) + (((b >> 16) & 255) - ((a >> 16) & 255)) * f),
-                (int) (((a >> 8) & 255) + (((b >> 8) & 255) - ((a >> 8) & 255)) * f),
-                (int) ((a & 255) + ((b & 255) - (a & 255)) * f));
+        return blendColor(st[i], st[i + 1], f);
+    }
+
+    private static int rampSapphire(float t) {
+        final int[] st = {0xFF00E5FF, 0xFF2979FF, 0xFFFF1744};   // cyan -> sapphire blue -> kinetic ruby
+        float x = t * 2f;
+        int i = Math.min((int) x, 1);
+        float f = x - i;
+        return blendColor(st[i], st[i + 1], f);
+    }
+
+    private static int rampOnyx(float t) {
+        final int[] st = {0xFFFFB300, 0xFFFF8F00, 0xFFFF3D00};   // warm amber -> gold -> ember
+        float x = t * 2f;
+        int i = Math.min((int) x, 1);
+        float f = x - i;
+        return blendColor(st[i], st[i + 1], f);
     }
 
     /** Turns the big number red (used when any side gauge is in its danger zone). */
@@ -158,9 +187,11 @@ public class SpeedometerView extends View {
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeCap(Paint.Cap.ROUND);
         p.setStrokeWidth(8);
-        p.setColor(0xFF1B2230);
+        int trackColor = (theme == THEME_SAPPHIRE) ? 0xFF0D1B2A : (theme == THEME_ONYX) ? 0xFF14171C : 0xFF1B2230;
+        p.setColor(trackColor);
         c.drawArc(rect, 135, 270, false, p);
-        p.setColor(0xFFFF1744);
+        int hotZoneColor = (theme == THEME_ONYX) ? 0xFFFF8F00 : 0xFFFF1744;
+        p.setColor(hotZoneColor);
         c.drawArc(rect, 135 + 216, 54, false, p);
 
         txt.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
@@ -172,10 +203,30 @@ public class SpeedometerView extends View {
             boolean major = i % 4 == 0, hot = i >= 32;
             float r2 = major ? 92 : 100;
             p.setStrokeWidth(major ? 3 : 1.5f);
-            p.setColor(hot ? 0xFFFF5252 : 0xFFCFD8DC);
+            int tickColor;
+            if (hot) {
+                tickColor = (theme == THEME_ONYX) ? 0xFFFF6D00 : 0xFFFF5252;
+            } else if (theme == THEME_SAPPHIRE) {
+                tickColor = major ? 0xFF00E5FF : 0x8000E5FF;
+            } else if (theme == THEME_ONYX) {
+                tickColor = major ? 0xFFFFB300 : 0x80FFB300;
+            } else {
+                tickColor = 0xFFCFD8DC;
+            }
+            p.setColor(tickColor);
             c.drawLine(150 + 108 * co, 150 + 108 * si, 150 + r2 * co, 150 + r2 * si, p);
             if (major) {
-                txt.setColor(hot ? 0xFFFF5252 : 0xFFE0E6EA);
+                int txtColor;
+                if (hot) {
+                    txtColor = (theme == THEME_ONYX) ? 0xFFFF8F00 : 0xFFFF5252;
+                } else if (theme == THEME_SAPPHIRE) {
+                    txtColor = 0xFF80D8FF;
+                } else if (theme == THEME_ONYX) {
+                    txtColor = 0xFFFFD54F;
+                } else {
+                    txtColor = 0xFFE0E6EA;
+                }
+                txt.setColor(txtColor);
                 c.drawText(String.valueOf(i * 5), 150 + 76 * co, 150 + 76 * si + 5, txt);
             }
         }
@@ -204,12 +255,17 @@ public class SpeedometerView extends View {
                 col = blendColor(0xFF00E676, 0xFFFFD600, tr * 0.35f); // Green -> slight warm
             }
         } else {
-            // Type R colour: white when calm, towards red with speed and hard acceleration
             float push = Math.max(0f, Math.min(accel / 15f, 1f));
             float t = isSweeping
                     ? Math.min(1f, (shown / MAX) * 1.15f)
                     : (shown > 160 ? 1f : Math.min(1f, shown / 170f * 0.65f + push * 0.5f));
-            col = ramp(t);
+            if (theme == THEME_SAPPHIRE) {
+                col = rampSapphire(t);
+            } else if (theme == THEME_ONYX) {
+                col = rampOnyx(t);
+            } else {
+                col = ramp(t);
+            }
         }
 
         p.setStyle(Paint.Style.STROKE);
@@ -248,7 +304,8 @@ public class SpeedometerView extends View {
         c.drawCircle(150, 150, 13, p);
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeWidth(3);
-        p.setColor(0xFFFF3D00);
+        int capBorder = (theme == THEME_SAPPHIRE) ? 0xFF00E5FF : (theme == THEME_ONYX) ? 0xFFFFA000 : 0xFFFF3D00;
+        p.setColor(capBorder);
         c.drawCircle(150, 150, 13, p);
 
         txt.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
@@ -261,7 +318,7 @@ public class SpeedometerView extends View {
         }
         txt.setTextSize(62);
         c.drawText(String.valueOf((int) shown), 150, 262, txt);
-        txt.setColor(0xFF9AA5B1);
+        txt.setColor((theme == THEME_SAPPHIRE) ? 0xFF80D8FF : (theme == THEME_ONYX) ? 0xFFFFD54F : 0xFF9AA5B1);
         txt.setTextSize(14);
         c.drawText("km/h", 150, 285, txt);
     }

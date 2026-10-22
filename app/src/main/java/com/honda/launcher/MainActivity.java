@@ -88,12 +88,19 @@ public class MainActivity extends Activity implements LocationListener {
 
     private static final int T_IDLE = 0, T_ARMED = 1, T_RUN = 2, T_DONE = 3;
 
+    public static final int THEME_TYPER = 0;
+    public static final int THEME_SAPPHIRE = 1;
+    public static final int THEME_ONYX = 2;
+
     private final Handler h = new Handler(Looper.getMainLooper());
-    private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.getDefault());
+    private final SimpleDateFormat timeFmt24 = new SimpleDateFormat("HH:mm", Locale.getDefault());
+    private final SimpleDateFormat timeFmt12 = new SimpleDateFormat("h:mm a", Locale.getDefault());
     private final SimpleDateFormat dateFmt = new SimpleDateFormat("EEE, d MMM", Locale.getDefault());
 
     private TextView clock, date, nowPlaying, tmVal, tmBest, battHealthText;
-    private View tmBox;
+    private View tmBox, tmAccent;
+    private LinearLayout musicBar;
+    private final TextView[] themeButtons = new TextView[3];
     private SpeedometerView speedo;
     private AuroraView aurora;
     private LinearLayout obdPanel, row1, row2, row3;
@@ -306,7 +313,8 @@ public class MainActivity extends Activity implements LocationListener {
 
     private void updateClock() {
         Date d = new Date();
-        clock.setText(timeFmt.format(d));
+        boolean is24h = (prefs == null) || prefs.getBoolean("time_24h", true);
+        clock.setText((is24h ? timeFmt24 : timeFmt12).format(d));
         date.setText(dateFmt.format(d));
     }
 
@@ -532,6 +540,7 @@ public class MainActivity extends Activity implements LocationListener {
         boolean sFuel = prefs.getBoolean("show_fuel", true);
         boolean sDtc = prefs.getBoolean("show_dtc", true);
         boolean sTm = prefs.getBoolean("timer_on", true);
+        boolean sMusic = prefs.getBoolean("show_music_bar", true);
         boolean eco = prefs.getBoolean("eco_mode", false);
 
         if (speedo != null) speedo.setEcoMode(eco);
@@ -550,9 +559,54 @@ public class MainActivity extends Activity implements LocationListener {
         if (row3 != null) row3.setVisibility((sAtf || sFuel || sDtc) ? View.VISIBLE : View.GONE);
 
         if (tmBox != null) tmBox.setVisibility(sTm ? View.VISIBLE : View.GONE);
+        if (musicBar != null) musicBar.setVisibility(sMusic ? View.VISIBLE : View.GONE);
+
+        int curTheme = prefs.getInt("ui_theme", THEME_SAPPHIRE);
+        applyTheme(curTheme);
+
+        updateClock();
 
         // Immediately update OBD status and clear danger if disabled!
         updateObd();
+    }
+
+    private void applyTheme(int theme) {
+        prefs.edit().putInt("ui_theme", theme).apply();
+        if (speedo != null) speedo.setTheme(theme);
+        if (gRpm != null) gRpm.setTheme(theme);
+        if (gTemp != null) gTemp.setTheme(theme);
+        if (gBatt != null) gBatt.setTheme(theme);
+        if (gLoad != null) gLoad.setTheme(theme);
+        if (gAtf != null) gAtf.setTheme(theme);
+        if (aurora != null) aurora.setTheme(theme);
+        if (tmAccent != null) {
+            int accentCol = (theme == THEME_SAPPHIRE) ? 0xFF00E5FF : (theme == THEME_ONYX) ? 0xFFFFB300 : RED;
+            tmAccent.setBackgroundColor(accentCol);
+        }
+        updateThemeButtonsUi(theme);
+    }
+
+    private void updateThemeButtonsUi(int activeTheme) {
+        if (themeButtons[0] == null) return;
+        final int[] themes = {THEME_TYPER, THEME_SAPPHIRE, THEME_ONYX};
+        for (int i = 0; i < 3; i++) {
+            TextView btn = themeButtons[i];
+            if (btn == null) continue;
+            boolean active = (themes[i] == activeTheme);
+            if (active) {
+                int activeBg = (activeTheme == THEME_SAPPHIRE) ? 0x4400E5FF : (activeTheme == THEME_ONYX) ? 0x44FFA000 : 0x44E4002B;
+                int activeBorder = (activeTheme == THEME_SAPPHIRE) ? 0xFF00E5FF : (activeTheme == THEME_ONYX) ? 0xFFFFA000 : 0xFFFF1744;
+                GradientDrawable g = new GradientDrawable();
+                g.setColor(activeBg);
+                g.setCornerRadius(dp(6));
+                g.setStroke(dp(2), activeBorder);
+                btn.setBackground(g);
+                btn.setTextColor(0xFFFFFFFF);
+            } else {
+                btn.setBackground(shape(0x22FFFFFF));
+                btn.setTextColor(0x8CFFFFFF);
+            }
+        }
     }
 
     // ---------------------------- 0-100 timer ----------------------------
@@ -1489,12 +1543,63 @@ public class MainActivity extends Activity implements LocationListener {
         tModesHeader.setPadding(dp(2), dp(14), 0, dp(8));
         list.addView(tModesHeader);
 
+        list.addView(buildThemeSelectorCard());
+        list.addView(gaugeCard("SHOW MUSIC CONTROLS", "Display or hide the bottom music playback bar on home screen", "show_music_bar", null));
+        list.addView(gaugeCard("24-HOUR CLOCK FORMAT", "Display time in 24-hour (15:00) vs 12-hour (3:00 PM) format", "time_24h", null));
         list.addView(gaugeCard("ECO / COMFORT MODE", "Dynamic color feedback: Green (safe/eco), Yellow (warning), Red (danger)", "eco_mode", null));
         list.addView(gaugeCard("AUTO-SAVE BLUETOOTH MUSIC", "Automatically record & save songs played from phone into car internal memory", "auto_save_music", null));
 
         sv.addView(list);
         root.addView(sv, lp(M, 0, 1f));
         return root;
+    }
+
+    private View buildThemeSelectorCard() {
+        final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(shape(0x22FFFFFF));
+        card.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(M, W);
+        clp.bottomMargin = dp(12);
+        card.setLayoutParams(clp);
+
+        TextView title = label(16, 0xFFFFFFFF);
+        title.setText("DASHBOARD DESIGN THEME");
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        card.addView(title);
+
+        TextView sub = label(12, 0x8CFFFFFF);
+        sub.setText("Select your active instrument cluster aesthetic");
+        sub.setPadding(0, dp(2), 0, dp(10));
+        card.addView(sub);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+
+        final int currentTheme = prefs.getInt("ui_theme", THEME_SAPPHIRE);
+
+        final String[] names = {"TYPE R RED", "ROYAL SAPPHIRE", "NOCTURNE ONYX"};
+        final int[] themes = {THEME_TYPER, THEME_SAPPHIRE, THEME_ONYX};
+
+        for (int i = 0; i < 3; i++) {
+            final int t = themes[i];
+            TextView btn = button(names[i], 12, new Runnable() {
+                public void run() {
+                    applyTheme(t);
+                }
+            });
+            btn.setPadding(dp(8), dp(10), dp(8), dp(10));
+            themeButtons[i] = btn;
+            LinearLayout.LayoutParams blp = lp(0, W, 1f);
+            if (i > 0) blp.leftMargin = dp(8);
+            row.addView(btn, blp);
+        }
+
+        updateThemeButtonsUi(currentTheme);
+        card.addView(row);
+        return card;
     }
 
     private View buildBluetoothHubCard() {
@@ -1960,6 +2065,7 @@ public class MainActivity extends Activity implements LocationListener {
         tm.setOrientation(LinearLayout.HORIZONTAL);
         View accent = new View(this);
         accent.setBackgroundColor(RED);
+        tmAccent = accent;
         tm.addView(accent, new LinearLayout.LayoutParams(dp(3), M));
         LinearLayout tcol = new LinearLayout(this);
         tcol.setOrientation(LinearLayout.VERTICAL);
@@ -2029,6 +2135,7 @@ public class MainActivity extends Activity implements LocationListener {
 
         // Bluetooth music bar
         LinearLayout bar = new LinearLayout(this);
+        musicBar = bar;
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         nowPlaying = label(18, 0xCCFFFFFF);

@@ -16,24 +16,47 @@ import android.view.View;
  */
 public class AuroraView extends View {
     static final boolean ANIMATE = true;
+    public static final int THEME_TYPER = 0;
+    public static final int THEME_SAPPHIRE = 1;
+    public static final int THEME_ONYX = 2;
+
     private static final int BASE = 0xFF08080A;
-    private static final int[] COL = {0xFFE4002B, 0xFF6E0014, 0xFF4A4A52};
+    private static final int[] COL_TYPER = {0xFFE4002B, 0xFF6E0014, 0xFF4A4A52};
+    private static final int[] COL_SAPPHIRE = {0xFF00B0FF, 0xFF0D47A1, 0xFF1A237E};
+    private static final int[] COL_ONYX = {0xFFFF8F00, 0xFFE65100, 0xFF212121};
 
     private final Paint[] p = {new Paint(), new Paint(), new Paint()};
     private final Paint glow = new Paint();
     private float w, h, r;
     private boolean running, danger;
+    private int theme = THEME_TYPER;
 
     public AuroraView(Context c) { super(c); }
 
+    public void setTheme(int theme) {
+        if (this.theme != theme) {
+            this.theme = theme;
+            updateThemeShaders();
+            invalidate();
+        }
+    }
+
+    public int getTheme() { return theme; }
+
     public void setDanger(boolean d) { if (d != danger) { danger = d; invalidate(); } }
+
+    private void updateThemeShaders() {
+        if (w <= 0 || h <= 0) return;
+        int[] col = (theme == THEME_SAPPHIRE) ? COL_SAPPHIRE : (theme == THEME_ONYX) ? COL_ONYX : COL_TYPER;
+        for (int i = 0; i < 3; i++) {
+            int c = col[i] & 0x00FFFFFF;
+            p[i].setShader(new RadialGradient(0, 0, r, c | 0x66000000, c, Shader.TileMode.CLAMP));
+        }
+    }
 
     @Override protected void onSizeChanged(int nw, int nh, int ow, int oh) {
         w = nw; h = nh; r = w * 0.55f;
-        for (int i = 0; i < 3; i++) {
-            int c = COL[i] & 0x00FFFFFF;
-            p[i].setShader(new RadialGradient(0, 0, r, c | 0x66000000, c, Shader.TileMode.CLAMP));
-        }
+        updateThemeShaders();
         glow.setShader(new RadialGradient(w / 2f, h / 2f, (float) Math.hypot(w, h) / 2f,
                 new int[]{0x00FF1744, 0x00FF1744, 0xFFFF1744}, new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
     }
@@ -52,7 +75,8 @@ public class AuroraView extends View {
     }
 
     @Override protected void onDraw(Canvas c) {
-        c.drawColor(BASE);
+        int baseColor = (theme == THEME_SAPPHIRE) ? 0xFF060B12 : (theme == THEME_ONYX) ? 0xFF0A0C0E : BASE;
+        c.drawColor(baseColor);
         float t = SystemClock.uptimeMillis() / 1000f;
         float m = ANIMATE ? t : 0f;
         blob(c, 0, w * 0.15f + w * 0.25f * (float) Math.sin(m * 0.12f), h * 0.20f + h * 0.20f * (float) Math.cos(m * 0.10f));

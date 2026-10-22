@@ -23,8 +23,13 @@ public class MiniGaugeView extends View {
     private final Paint t = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF(12, 6, 88, 82);   // centre (50,44), r = 38
     private float value = Float.NaN;
+    public static final int THEME_TYPER = 0;
+    public static final int THEME_SAPPHIRE = 1;
+    public static final int THEME_ONYX = 2;
+
     private boolean danger, caution;
     private boolean ecoMode = false;
+    private int theme = THEME_TYPER;
 
     public MiniGaugeView(Context c, String label, String unit, float min, float max,
                          float cautionHigh, float dangerHigh, float cautionLow, float dangerLow,
@@ -43,6 +48,15 @@ public class MiniGaugeView extends View {
             invalidate();
         }
     }
+
+    public void setTheme(int theme) {
+        if (this.theme != theme) {
+            this.theme = theme;
+            invalidate();
+        }
+    }
+
+    public int getTheme() { return theme; }
 
     /** Returns true if the value is in the danger zone. */
     public boolean setValue(float v) {
@@ -65,7 +79,8 @@ public class MiniGaugeView extends View {
         p.setStyle(Paint.Style.STROKE);
         p.setStrokeCap(Paint.Cap.ROUND);
         p.setStrokeWidth(7);
-        p.setColor(0xFF1B2230);
+        int trackColor = (theme == THEME_SAPPHIRE) ? 0xFF0D1B2A : (theme == THEME_ONYX) ? 0xFF14171C : 0xFF1B2230;
+        p.setColor(trackColor);
         c.drawArc(rect, 135, 270, false, p);
 
         // Caution & danger zone tracks
@@ -83,9 +98,13 @@ public class MiniGaugeView extends View {
         if (danger) {
             col = 0xFFFF1744; // Red (Danger)
         } else if (caution) {
-            col = 0xFFFFD600; // Yellow (Warning)
+            col = (theme == THEME_ONYX) ? 0xFFFF8F00 : 0xFFFFD600; // Amber / Yellow
         } else if (ecoMode) {
             col = 0xFF00E676; // Green (Safe in Eco/Comfort Mode)
+        } else if (theme == THEME_SAPPHIRE) {
+            col = 0xFF00E5FF; // Electric Cyan
+        } else if (theme == THEME_ONYX) {
+            col = 0xFFFFB300; // Warm Tungsten Amber
         } else {
             col = 0xFFF2F2F2; // White (Standard Mode)
         }
@@ -114,6 +133,10 @@ public class MiniGaugeView extends View {
             t.setColor(0xFFFFD600);
         } else if (ecoMode && !Float.isNaN(value)) {
             t.setColor(0xFF00E676);
+        } else if (theme == THEME_SAPPHIRE && !Float.isNaN(value)) {
+            t.setColor(0xFFE0F7FA); // Ice Cyan White
+        } else if (theme == THEME_ONYX && !Float.isNaN(value)) {
+            t.setColor(0xFFFFF8E1); // Warm Gold White
         } else {
             t.setColor(0xFFFFFFFF);
         }
@@ -124,12 +147,12 @@ public class MiniGaugeView extends View {
 
         t.setTypeface(Typeface.DEFAULT);
         t.setTextSize(10);
-        t.setColor(0xFF9AA5B1);
+        t.setColor((theme == THEME_SAPPHIRE) ? 0xFF80D8FF : (theme == THEME_ONYX) ? 0xFFFFCA28 : 0xFF9AA5B1);
         c.drawText(unit, 50, 66, t);
 
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setTextSize(12);
-        t.setColor(0xFFCFD8DC);
+        t.setColor((theme == THEME_SAPPHIRE) ? 0xFFB3E5FC : (theme == THEME_ONYX) ? 0xFFFFE082 : 0xFFCFD8DC);
         c.drawText(label, 50, 95, t);
     }
 }
