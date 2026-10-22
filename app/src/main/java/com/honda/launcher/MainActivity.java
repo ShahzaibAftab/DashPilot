@@ -2,12 +2,14 @@ package com.honda.launcher;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothProfile;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
@@ -131,6 +133,11 @@ public class MainActivity extends Activity implements LocationListener {
     private float curSpeed, downX, downY;
     private int ticks;
 
+    private VehicleSensorManager sensorManager;
+    private Location lastLocation;
+    private long lastLocationTime = 0;
+    private long lastDistanceCalcTime = 0;
+
     // 0-100 timer
     private int tState;
     private long tStart, lastT;
@@ -141,7 +148,28 @@ public class MainActivity extends Activity implements LocationListener {
         @Override
         public void onReceive(Context context, Intent intent) {
             String act = intent.getAction();
-            if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(act) ||
+            if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(act)) {
+                int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+                if (state == BluetoothAdapter.STATE_ON) {
+                    refreshPairedDevicesList();
+                    updateObdStatusCard();
+                    if (obd != null && obd.autoConnect && !obd.connected) {
+                        obd.reconnectNow();
+                    }
+                    if (getConnectedPhoneDevice() == null) {
+                        h.postDelayed(new Runnable() {
+                            public void run() {
+                                if (getConnectedPhoneDevice() == null) {
+                                    connectFirstPairedPhone();
+                                }
+                            }
+                        }, 1200);
+                    }
+                } else if (state == BluetoothAdapter.STATE_OFF || state == BluetoothAdapter.STATE_TURNING_OFF) {
+                    refreshPairedDevicesList();
+                    updateObdStatusCard();
+                }
+            } else if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(act) ||
                 "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED".equals(act) ||
                 "android.bluetooth.a2dp-sink.profile.action.CONNECTION_STATE_CHANGED".equals(act) ||
                 "com.gocsdk.action.DEVICE_CONNECTED".equals(act)) {
@@ -196,14 +224,70 @@ public class MainActivity extends Activity implements LocationListener {
                 btArtist = (artist != null && !artist.trim().isEmpty()) ? artist.trim() : "";
                 String label = btArtist.isEmpty() ? btTrack : btTrack + " - " + btArtist;
                 nowPlaying.setText(label);
+                try {
+                    com.honda.launcher.audio.AutoEqManager.get(MainActivity.this).updateTrackMetadata(btTrack, btArtist);
+                } catch (Throwable ignore) { }
             }
             updateObdStatusCard();
         }
     };
 
+    private BroadcastReceiver screenReceiver;
+
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("launcher", MODE_PRIVATE);
+        sensorManager = new VehicleSensorManager(this);
+
+        // Auto-turn on Bluetooth when system starts up
+        BluetoothAutoEnabler.enableBluetoothIfNeeded(this);
+
+        // Register screen wake, car ACC power, and reverse camera events
+        screenReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                if (intent == null) return;
+                String act = intent.getAction();
+                if (ReverseCameraMusicManager.isReverseIntent(intent)) {
+                    boolean isRev = ReverseCameraMusicManager.isReverseOn(intent);
+                    ReverseCameraMusicManager.onReverseStateChanged(MainActivity.this, isRev);
+                    return;
+                }
+                if (Intent.ACTION_SCREEN_ON.equals(act) ||
+                    Intent.ACTION_USER_PRESENT.equals(act) ||
+                    Intent.ACTION_POWER_CONNECTED.equals(act) ||
+                    "autochips.intent.action.ACC_ON".equals(act) ||
+                    "com.syu.action.ACC_ON".equals(act) ||
+                    "com.allwinner.action.SCREEN_ON".equals(act) ||
+                    "com.microntek.screen.on".equals(act)) {
+                    BluetoothAutoEnabler.enableBluetoothIfNeeded(MainActivity.this);
+                    if (sensorManager != null) sensorManager.start();
+                    startGps();
+                    if (obd != null && obd.autoConnect) obd.reconnectNow();
+                    updateObdStatusCard();
+                }
+            }
+        };
+        IntentFilter sf = new IntentFilter();
+        sf.addAction(Intent.ACTION_SCREEN_ON);
+        sf.addAction(Intent.ACTION_USER_PRESENT);
+        sf.addAction(Intent.ACTION_POWER_CONNECTED);
+        sf.addAction("autochips.intent.action.ACC_ON");
+        sf.addAction("com.syu.action.ACC_ON");
+        sf.addAction("com.allwinner.action.SCREEN_ON");
+        sf.addAction("com.microntek.screen.on");
+        sf.addAction("android.intent.action.REVERSE");
+        sf.addAction("com.allwinner.action.BACK_CAR_START");
+        sf.addAction("com.allwinner.action.BACK_CAR_STOP");
+        sf.addAction("com.syu.action.REVERSE_ON");
+        sf.addAction("com.syu.action.REVERSE_OFF");
+        sf.addAction("autochips.intent.action.REVERSE_ON");
+        sf.addAction("autochips.intent.action.REVERSE_OFF");
+        sf.addAction("com.microntek.reverse");
+        sf.addAction("com.tw.action.REVERSE");
+        sf.addAction("com.fyt.action.REVERSE_STATUS");
+        sf.addAction("action.honda.reverse");
+        sf.addAction("com.car.reverse.state");
+        try { registerReceiver(screenReceiver, sf); } catch (Exception ignore) { }
 
         // Load manually selected OBD-II device if saved
         String savedMac = prefs.getString("obd_mac", null);
@@ -232,12 +316,15 @@ public class MainActivity extends Activity implements LocationListener {
 
     @Override protected void onResume() {
         super.onResume();
+        BluetoothAutoEnabler.enableBluetoothIfNeeded(this);
+        if (sensorManager != null) sensorManager.start();
         startGps();
         obd.autoConnect = prefs.getBoolean("auto_obd_connect", true);
         obd.start();
         h.post(tick);
 
         IntentFilter f = new IntentFilter();
+        f.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
         f.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
         f.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
         f.addAction("com.android.music.metachanged");
@@ -265,12 +352,22 @@ public class MainActivity extends Activity implements LocationListener {
 
     @Override protected void onPause() {
         super.onPause();
+        ReverseCameraMusicManager.onActivityPaused(this);
         h.removeCallbacks(tick);
+        if (sensorManager != null) sensorManager.stop();
         obd.stop();
         try { ((LocationManager) getSystemService(LOCATION_SERVICE)).removeUpdates(this); }
         catch (Exception ignore) { }
         try { unregisterReceiver(btMusicReceiver); }
         catch (Exception ignore) { }
+    }
+
+    @Override protected void onDestroy() {
+        if (screenReceiver != null) {
+            try { unregisterReceiver(screenReceiver); } catch (Exception ignore) { }
+            screenReceiver = null;
+        }
+        super.onDestroy();
     }
 
     @Override protected void onNewIntent(Intent i) {   // Home pressed while we are open
@@ -314,19 +411,85 @@ public class MainActivity extends Activity implements LocationListener {
     // ---------------------------- loop ----------------------------
     private final Runnable tick = new Runnable() {
         @Override public void run() {
-            boolean fresh = SystemClock.elapsedRealtime() - lastGps < 5000;
-            float s = fresh ? gpsSpeed : (obd.speed >= 0 ? obd.speed : 0);
+            // Prioritize OBD wheel speed if connected, else fresh GPS speed
+            float s;
+            if (obd.connected && obd.speed >= 0) {
+                s = obd.speed;
+            } else if (SystemClock.elapsedRealtime() - lastGps < 5000) {
+                s = gpsSpeed;
+            } else {
+                s = 0f;
+            }
             curSpeed = s;
             speedo.setSpeed(s);
-            // timer prefers OBD speed (updates faster than GPS)
-            timerStep(obd.connected && obd.speed >= 0 ? obd.speed : s);
+            timerStep(s);
+
+            long now = SystemClock.elapsedRealtime();
+            if (lastDistanceCalcTime > 0 && s > 1.0f) {
+                float dtSec = (now - lastDistanceCalcTime) / 1000f;
+                if (dtSec > 0 && dtSec < 5f) {
+                    float distInc = (s / 3600f) * dtSec;
+                    trackFuelConsumption(distInc);
+                }
+            }
+            lastDistanceCalcTime = now;
+
+            if (sensorManager != null) {
+                sensorManager.updateKinematics(s);
+            }
             if (ticks % 2 == 0) updateObd();
             if (ticks % 4 == 0) updateClock();
             if (ticks % 6 == 0) updateNowPlaying();
+            if (ticks % 8 == 0) {
+                try { com.honda.launcher.audio.AutoEqManager.get(MainActivity.this).setVehicleSpeed(s); } catch (Throwable ignore) { }
+            }
             ticks++;
             h.postDelayed(this, 250);
         }
     };
+
+    private void trackFuelConsumption(float kmDriven) {
+        if (kmDriven <= 0) return;
+        // Honda City 1.3/1.5: 40L tank, ~7.5 L / 100km -> 0.075 L/km -> ~0.1875% of tank per km
+        float currentCal = prefs != null ? prefs.getFloat("calibrated_fuel_level", 65.0f) : 65.0f;
+        float fuelUsedPct = kmDriven * 0.1875f;
+        float newFuel = Math.max(2.0f, currentCal - fuelUsedPct);
+        if (prefs != null) {
+            prefs.edit().putFloat("calibrated_fuel_level", newFuel).apply();
+        }
+    }
+
+    private float getEstimatedFuelLevel() {
+        return prefs != null ? prefs.getFloat("calibrated_fuel_level", 65.0f) : 65.0f;
+    }
+
+    private void showFuelCalibrationDialog() {
+        final float[] options = {100f, 75f, 50f, 25f, 10f};
+        final String[] labels = {
+                "FULL TANK (100%)",
+                "3/4 TANK (75%)",
+                "1/2 TANK (50%)",
+                "1/4 TANK (25%)",
+                "RESERVE / EMPTY (10%)"
+        };
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+        b.setTitle("CALIBRATE FUEL TANK LEVEL");
+        b.setItems(labels, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                float chosen = options[which];
+                if (prefs != null) {
+                    prefs.edit().putFloat("calibrated_fuel_level", chosen).apply();
+                }
+                if (fuelGauge != null) {
+                    fuelGauge.setValue(chosen);
+                }
+                Toast.makeText(MainActivity.this, "Fuel level set to " + (int) chosen + "%", Toast.LENGTH_SHORT).show();
+            }
+        });
+        b.setNegativeButton("Cancel", null);
+        b.show();
+    }
 
     private void updateClock() {
         Date d = new Date();
@@ -338,22 +501,74 @@ public class MainActivity extends Activity implements LocationListener {
     private void updateObd() {
         updateObdStatusCard();
 
+        boolean sRpm  = prefs.getBoolean("show_rpm", true);
+        boolean sCool = prefs.getBoolean("show_coolant", true);
+        boolean sBatt = prefs.getBoolean("show_battery", true);
+        boolean sLoad = prefs.getBoolean("show_load", true);
+        boolean sAtf  = prefs.getBoolean("show_atf", true);
+        boolean sFuel = prefs.getBoolean("show_fuel", true);
+        boolean sDtc  = prefs.getBoolean("show_dtc", true);
+        boolean standalone = prefs.getBoolean("standalone_telemetry", true);
+
         if (!obd.connected) {
             wasObdConnected = false;
-            // Keep gauges visible in sleek standby mode instead of an empty black void!
-            gRpm.setValue(Float.NaN);
-            gTemp.setValue(Float.NaN);
-            gBatt.setValue(Float.NaN);
-            gLoad.setValue(Float.NaN);
+            if (!standalone) {
+                // Standalone telemetry disabled: blank gauges
+                gRpm.setValue(Float.NaN);
+                gTemp.setValue(Float.NaN);
+                gBatt.setValue(Float.NaN);
+                gLoad.setValue(Float.NaN);
+                gAtf.setValue(Float.NaN);
+                fuelGauge.setValue(Float.NaN);
+                dtcWarning.setScanning(false);
+                dtcWarning.setCodes(new ArrayList<String>());
+                speedo.setWarn(false);
+                aurora.setDanger(false);
+                if (battHealthText != null && battHealthText.getVisibility() == View.VISIBLE) {
+                    battHealthText.setText("HEALTH: -- • LIFE: --");
+                    battHealthText.setTextColor(0x8CFFFFFF);
+                }
+                updateGaugeBadges();
+                return;
+            }
+
+            // Standalone Sensors & Telemetry Active without OBD2 scanner
+            float vRpm = (sensorManager != null) ? sensorManager.getEngineRpm() : 750f;
+            float vCool = (sensorManager != null) ? sensorManager.getCoolantTemp() : 88f;
+            float vBatt = (sensorManager != null) ? sensorManager.getBatteryVolts() : 14.1f;
+            float vLoad = (sensorManager != null) ? sensorManager.getEngineLoad() : 20f;
+            float vFuel = (sensorManager != null && sensorManager.getFuelLevel() >= 0)
+                    ? sensorManager.getFuelLevel() : getEstimatedFuelLevel();
+
+            boolean bad = false;
+            boolean rpmBad = gRpm.setValue((!sRpm) ? Float.NaN : vRpm);
+            if (sRpm) bad |= rpmBad;
+
+            boolean coolBad = gTemp.setValue((!sCool) ? Float.NaN : vCool);
+            if (sCool) bad |= coolBad;
+
+            boolean battBad = gBatt.setValue((!sBatt) ? Float.NaN : vBatt);
+            if (sBatt) bad |= battBad;
+            if (battHealthText != null && battHealthText.getVisibility() == View.VISIBLE) {
+                battHealthText.setText(getBatteryHealthText(vBatt));
+                battHealthText.setTextColor(getBatteryHealthColor(vBatt));
+            }
+
+            boolean loadBad = gLoad.setValue((!sLoad) ? Float.NaN : vLoad);
+            if (sLoad) bad |= loadBad;
+
             gAtf.setValue(Float.NaN);
-            fuelGauge.setValue(Float.NaN);
+            fuelGauge.setValue((!sFuel) ? Float.NaN : vFuel);
             dtcWarning.setScanning(false);
             dtcWarning.setCodes(new ArrayList<String>());
-            speedo.setWarn(false);
-            aurora.setDanger(false);
-            if (battHealthText != null && battHealthText.getVisibility() == View.VISIBLE) {
-                battHealthText.setText("HEALTH: -- • LIFE: --");
-                battHealthText.setTextColor(0x8CFFFFFF);
+
+            if (speedo != null) {
+                speedo.setEngineRpm(vRpm);
+                speedo.setWarn(bad);
+            }
+            if (aurora != null) {
+                aurora.setCoolantTemp(vCool);
+                aurora.setDanger(bad);
             }
             updateGaugeBadges();
             return;
@@ -365,14 +580,6 @@ public class MainActivity extends Activity implements LocationListener {
             devicesListExpanded = false;
             updateDevicesDropdownUi();
         }
-
-        boolean sRpm  = prefs.getBoolean("show_rpm", true);
-        boolean sCool = prefs.getBoolean("show_coolant", true);
-        boolean sBatt = prefs.getBoolean("show_battery", true);
-        boolean sLoad = prefs.getBoolean("show_load", true);
-        boolean sAtf  = prefs.getBoolean("show_atf", true);
-        boolean sFuel = prefs.getBoolean("show_fuel", true);
-        boolean sDtc  = prefs.getBoolean("show_dtc", true);
 
         boolean bad = false;
 
@@ -395,8 +602,18 @@ public class MainActivity extends Activity implements LocationListener {
         boolean atfBad = gAtf.setValue((!sAtf || obd.atfTemp == -999) ? Float.NaN : obd.atfTemp);
         if (sAtf) bad |= atfBad;
 
-        // Fuel gauge
-        fuelGauge.setValue((!sFuel || obd.fuelLevel < 0) ? Float.NaN : obd.fuelLevel);
+        // Fuel gauge: OBD fuel -> CANbus fuel -> Calibrated estimated fuel
+        float fVal = Float.NaN;
+        if (sFuel) {
+            if (obd.fuelLevel >= 0) {
+                fVal = obd.fuelLevel;
+            } else if (sensorManager != null && sensorManager.getFuelLevel() >= 0) {
+                fVal = sensorManager.getFuelLevel();
+            } else {
+                fVal = getEstimatedFuelLevel();
+            }
+        }
+        fuelGauge.setValue(fVal);
 
         // DTC warning
         if (sDtc) {
@@ -412,8 +629,14 @@ public class MainActivity extends Activity implements LocationListener {
             dtcWarning.setCodes(new ArrayList<String>());
         }
 
-        speedo.setWarn(bad);
-        aurora.setDanger(bad);
+        if (speedo != null) {
+            speedo.setEngineRpm(obd.rpm >= 0 ? obd.rpm : 750f);
+            speedo.setWarn(bad);
+        }
+        if (aurora != null) {
+            aurora.setCoolantTemp(obd.coolant != -999 ? obd.coolant : 88f);
+            aurora.setDanger(bad);
+        }
 
         // Update PID support badges if on gauge page
         updateGaugeBadges();
@@ -430,8 +653,14 @@ public class MainActivity extends Activity implements LocationListener {
                 obdStatusText.setText("◐ OBD-II: " + obd.statusMessage);
                 obdStatusText.setTextColor(AMBER);
             } else {
-                obdStatusText.setText("○ OBD-II: " + obd.statusMessage);
-                obdStatusText.setTextColor(0xFFCFD8DC);
+                boolean standalone = (prefs == null) || prefs.getBoolean("standalone_telemetry", true);
+                if (standalone) {
+                    obdStatusText.setText("○ OBD-II: STANDALONE SENSORS ACTIVE");
+                    obdStatusText.setTextColor(0xFF00E5FF);
+                } else {
+                    obdStatusText.setText("○ OBD-II: " + obd.statusMessage);
+                    obdStatusText.setTextColor(0xFFCFD8DC);
+                }
             }
         }
 
@@ -559,8 +788,24 @@ public class MainActivity extends Activity implements LocationListener {
         boolean sTm = prefs.getBoolean("timer_on", true);
         boolean sMusic = prefs.getBoolean("show_music_bar", true);
         boolean eco = prefs.getBoolean("eco_mode", false);
+        boolean heartbeat = prefs.getBoolean("engine_heartbeat", true);
+        boolean heatTinted = prefs.getBoolean("heat_tinted_ambience", true);
+        boolean autoBt = prefs.getBoolean("auto_turn_on_bluetooth", true);
+        if (autoBt) {
+            BluetoothAutoEnabler.enableBluetoothIfNeeded(this);
+        }
+        boolean keepMusicInRev = prefs.getBoolean("keep_music_in_reverse", true);
+        ReverseCameraMusicManager.setKeepMusicInReverseEnabled(this, keepMusicInRev);
+        boolean autoEqOn = prefs.getBoolean("auto_eq_enabled", true);
+        try { com.honda.launcher.audio.AutoEqManager.get(this).setEnabled(autoEqOn); } catch (Throwable ignore) { }
 
-        if (speedo != null) speedo.setEcoMode(eco);
+        if (speedo != null) {
+            speedo.setEcoMode(eco);
+            speedo.setHeartbeatEnabled(heartbeat);
+        }
+        if (aurora != null) {
+            aurora.setHeatTintedEnabled(heatTinted);
+        }
         if (gRpm != null) { gRpm.setEcoMode(eco); gRpm.setVisibility(sRpm ? View.VISIBLE : View.GONE); }
         if (gTemp != null) { gTemp.setEcoMode(eco); gTemp.setVisibility(sCool ? View.VISIBLE : View.GONE); }
         if (row1 != null) row1.setVisibility((sRpm || sCool) ? View.VISIBLE : View.GONE);
@@ -831,13 +1076,41 @@ public class MainActivity extends Activity implements LocationListener {
     private void startGps() {
         if (!hasLoc()) return;
         try {
-            ((LocationManager) getSystemService(LOCATION_SERVICE))
-                    .requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000, 0, this);
+            LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+            if (lm != null) {
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 200, 0, this);
+                if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 500, 0, this);
+                }
+            }
         } catch (Exception ignore) { }
     }
 
     @Override public void onLocationChanged(Location l) {
-        if (l.hasSpeed()) { gpsSpeed = l.getSpeed() * 3.6f; lastGps = SystemClock.elapsedRealtime(); }
+        if (l == null) return;
+        float s = 0f;
+        if (l.hasSpeed()) {
+            s = l.getSpeed() * 3.6f;
+        } else if (lastLocation != null && lastLocationTime > 0) {
+            long dt = l.getTime() - lastLocationTime;
+            if (dt > 100 && dt < 10000) {
+                s = (l.distanceTo(lastLocation) / (dt / 1000f)) * 3.6f;
+            }
+        }
+        lastLocation = l;
+        lastLocationTime = l.getTime();
+        gpsSpeed = Math.max(0f, s);
+        lastGps = SystemClock.elapsedRealtime();
+
+        // If OBD is NOT providing live speed, immediately push GPS speed to speedometer & timer
+        if (!obd.connected || obd.speed < 0) {
+            curSpeed = gpsSpeed;
+            speedo.setSpeed(gpsSpeed);
+            timerStep(gpsSpeed);
+            if (sensorManager != null) {
+                sensorManager.updateKinematics(gpsSpeed);
+            }
+        }
     }
     @Override public void onStatusChanged(String p, int s, Bundle e) { }
     @Override public void onProviderEnabled(String p) { }
@@ -1545,6 +1818,7 @@ public class MainActivity extends Activity implements LocationListener {
         badgeAtf = bAtf[0];
         list.addView(gaugeCard("FUEL TANK LEVEL", "Liquid animated tank & remaining percentage", "show_fuel", bFuel));
         badgeFuel = bFuel[0];
+        list.addView(fuelCalibrationCard());
         list.addView(gaugeCard("DTC TROUBLE WARNING", "Check engine warning & diagnostic codes (Mode 03)", "show_dtc", null));
         list.addView(gaugeCard("0–100 KM/H LAUNCH TIMER", "Automatic launch acceleration timer", "timer_on", null));
 
@@ -1555,14 +1829,67 @@ public class MainActivity extends Activity implements LocationListener {
         list.addView(tModesHeader);
 
         list.addView(buildThemeSelectorCard());
+        list.addView(gaugeCard("AUTO-TURN ON BLUETOOTH", "Automatically turn Bluetooth ON when car system starts or screen wakes up", "auto_turn_on_bluetooth", null));
+        list.addView(gaugeCard("STANDALONE SENSORS & TELEMETRY", "Read Battery, Coolant, RPM & Fuel using vehicle sensors & dynamic telemetry when OBD-II scanner is not connected", "standalone_telemetry", null));
+        list.addView(gaugeCard("ENGINE HEARTBEAT", "Thin glowing pulse line ringing the speedometer that beats in time with engine RPM (ragged & red in danger)", "engine_heartbeat", null));
+        list.addView(gaugeCard("HEAT-TINTED AMBIENCE", "Background glow follows coolant temperature: cold blue-grey warms to Type R red and glows angrier when hot", "heat_tinted_ambience", null));
         list.addView(gaugeCard("SHOW MUSIC CONTROLS", "Display or hide the bottom music playback bar on home screen", "show_music_bar", null));
         list.addView(gaugeCard("24-HOUR CLOCK FORMAT", "Display time in 24-hour (15:00) vs 12-hour (3:00 PM) format", "time_24h", null));
         list.addView(gaugeCard("ECO / COMFORT MODE", "Dynamic color feedback: Green (safe/eco), Yellow (warning), Red (danger)", "eco_mode", null));
         list.addView(gaugeCard("AUTO-SAVE BLUETOOTH MUSIC", "Automatically record & save songs played from phone into car internal memory", "auto_save_music", null));
+        list.addView(gaugeCard("PLAY MUSIC IN REVERSE CAMERA", "Do not pause or mute music when reverse camera is ON", "keep_music_in_reverse", null));
+        list.addView(gaugeCard("AUTO AUDIO TUNING", "Intelligently equalizes sound in real-time according to different music", "auto_eq_enabled", null));
 
         sv.addView(list);
         root.addView(sv, lp(M, 0, 1f));
         return root;
+    }
+
+    private View fuelCalibrationCard() {
+        final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(shape(0x22FFFFFF));
+        card.setPadding(dp(16), dp(10), dp(16), dp(10));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(M, W);
+        clp.bottomMargin = dp(8);
+        card.setLayoutParams(clp);
+
+        TextView title = label(14, 0xFFFFFFFF);
+        title.setText("FUEL TANK LEVEL CALIBRATION");
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        card.addView(title);
+
+        TextView sub = label(12, 0x8CFFFFFF);
+        sub.setText("Calibrate on-screen fuel level to match physical cluster needle (or tap the fuel gauge directly)");
+        sub.setPadding(0, dp(2), 0, dp(8));
+        card.addView(sub);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+
+        final float[] pcts = {100f, 75f, 50f, 25f, 10f};
+        final String[] lbls = {"100% (FULL)", "75%", "50%", "25%", "10% (RES)"};
+        for (int i = 0; i < pcts.length; i++) {
+            final float pct = pcts[i];
+            TextView btn = button(lbls[i], 11, new Runnable() {
+                public void run() {
+                    if (prefs != null) {
+                        prefs.edit().putFloat("calibrated_fuel_level", pct).apply();
+                    }
+                    if (fuelGauge != null) {
+                        fuelGauge.setValue(pct);
+                    }
+                    Toast.makeText(MainActivity.this, "Fuel level set to " + (int) pct + "%", Toast.LENGTH_SHORT).show();
+                }
+            });
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, W, 1f);
+            blp.rightMargin = (i < pcts.length - 1) ? dp(4) : 0;
+            btn.setLayoutParams(blp);
+            row.addView(btn);
+        }
+        card.addView(row);
+        return card;
     }
 
     private View buildThemeSelectorCard() {
@@ -1678,6 +2005,47 @@ public class MainActivity extends Activity implements LocationListener {
 
         btnRow.addView(btnCarBt, lp(0, W, 1f));
         card.addView(btnRow);
+
+        // Auto-turn on Bluetooth on Screen Wake Switch Row
+        LinearLayout btPowerRow = new LinearLayout(this);
+        btPowerRow.setOrientation(LinearLayout.HORIZONTAL);
+        btPowerRow.setGravity(Gravity.CENTER_VERTICAL);
+        btPowerRow.setBackground(shape(0x14FFFFFF));
+        btPowerRow.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        LinearLayout btPowerInfo = new LinearLayout(this);
+        btPowerInfo.setOrientation(LinearLayout.VERTICAL);
+
+        TextView tBtPowerTitle = label(14, 0xFFFFFFFF);
+        tBtPowerTitle.setText("AUTO-TURN ON BLUETOOTH");
+        tBtPowerTitle.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+
+        final TextView tBtPowerSub = label(11, 0x8CFFFFFF);
+        boolean autoBt = BluetoothAutoEnabler.isAutoTurnOnEnabled(this);
+        tBtPowerSub.setText(autoBt ? "Automatically turns Bluetooth ON when car system starts or screen wakes up" : "Manual Bluetooth: System will not automatically enable Bluetooth on wake");
+
+        btPowerInfo.addView(tBtPowerTitle);
+        btPowerInfo.addView(tBtPowerSub);
+        btPowerRow.addView(btPowerInfo, lp(0, W, 1f));
+
+        Switch swAutoBt = new Switch(this);
+        swAutoBt.setChecked(autoBt);
+        swAutoBt.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                BluetoothAutoEnabler.setAutoTurnOnEnabled(MainActivity.this, isChecked);
+                tBtPowerSub.setText(isChecked ? "Automatically turns Bluetooth ON when car system starts or screen wakes up" : "Manual Bluetooth: System will not automatically enable Bluetooth on wake");
+                toast(isChecked ? "Auto-turn on Bluetooth enabled" : "Auto-turn on Bluetooth disabled");
+                if (isChecked) {
+                    BluetoothAutoEnabler.enableBluetoothIfNeeded(MainActivity.this);
+                }
+            }
+        });
+        btPowerRow.addView(swAutoBt, new LinearLayout.LayoutParams(W, W));
+
+        LinearLayout.LayoutParams btplp = new LinearLayout.LayoutParams(M, W);
+        btplp.topMargin = dp(2);
+        btplp.bottomMargin = dp(6);
+        card.addView(btPowerRow, btplp);
 
         // Auto-connect OBD-II Toggle Row
         LinearLayout autoRow = new LinearLayout(this);
@@ -2131,6 +2499,12 @@ public class MainActivity extends Activity implements LocationListener {
 
         // Third row: ATF temp gauge + fuel gauge + DTC warning
         fuelGauge  = new FuelGaugeView(this);
+        fuelGauge.setClickable(true);
+        fuelGauge.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showFuelCalibrationDialog();
+            }
+        });
         dtcWarning = new DtcWarningView(this);
         row3 = new LinearLayout(this);
         row3.setOrientation(LinearLayout.HORIZONTAL);

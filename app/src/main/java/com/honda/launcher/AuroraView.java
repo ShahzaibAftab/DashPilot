@@ -25,11 +25,19 @@ public class AuroraView extends View {
     private static final int[] COL_SAPPHIRE = {0xFF00B0FF, 0xFF0D47A1, 0xFF1A237E};
     private static final int[] COL_ONYX = {0xFFFF8F00, 0xFFE65100, 0xFF212121};
 
+    // Heat-tinted ambience palettes: cold blue-grey -> warm bronze -> Type R red -> hot angry crimson
+    private static final int[] COL_COLD = {0xFF37474F, 0xFF1E3A5F, 0xFF263238};
+    private static final int[] COL_WARM = {0xFF8D6E63, 0xFF5D4037, 0xFF37474F};
+    private static final int[] COL_HOT  = {0xFFFF1744, 0xFFFF3D00, 0xFFB71C1C};
+
     private final Paint[] p = {new Paint(), new Paint(), new Paint()};
     private final Paint glow = new Paint();
     private float w, h, r;
     private boolean running, danger;
     private int theme = THEME_TYPER;
+
+    private boolean heatTinted = true;
+    private float coolantTemp = Float.NaN;
 
     public AuroraView(Context c) { super(c); }
 
@@ -45,9 +53,63 @@ public class AuroraView extends View {
 
     public void setDanger(boolean d) { if (d != danger) { danger = d; invalidate(); } }
 
+    public void setHeatTintedEnabled(boolean enabled) {
+        if (this.heatTinted != enabled) {
+            this.heatTinted = enabled;
+            updateThemeShaders();
+            invalidate();
+        }
+    }
+
+    public boolean isHeatTintedEnabled() { return heatTinted; }
+
+    public void setCoolantTemp(float temp) {
+        if (Float.isNaN(temp) && Float.isNaN(coolantTemp)) return;
+        if (!Float.isNaN(temp) && !Float.isNaN(coolantTemp) && Math.abs(temp - coolantTemp) < 0.5f) return;
+        if (Float.compare(temp, coolantTemp) != 0) {
+            this.coolantTemp = temp;
+            if (heatTinted) {
+                updateThemeShaders();
+                invalidate();
+            }
+        }
+    }
+
+    public float getCoolantTemp() { return coolantTemp; }
+
+    private static int blendColor(int a, int b, float t) {
+        t = Math.max(0f, Math.min(1f, t));
+        int rr = (int) (((a >> 16) & 0xFF) + (((b >> 16) & 0xFF) - ((a >> 16) & 0xFF)) * t);
+        int gg = (int) (((a >>  8) & 0xFF) + (((b >>  8) & 0xFF) - ((a >>  8) & 0xFF)) * t);
+        int bb = (int) (( a        & 0xFF) + (( b        & 0xFF) - ( a        & 0xFF)) * t);
+        return 0xFF000000 | (rr << 16) | (gg << 8) | bb;
+    }
+
+    private int[] calculateHeatTintedColors(float temp) {
+        int[] out = new int[3];
+        if (Float.isNaN(temp) || temp <= 45f) {
+            System.arraycopy(COL_COLD, 0, out, 0, 3);
+        } else if (temp < 65f) {
+            float t = (temp - 45f) / 20f;
+            for (int i = 0; i < 3; i++) out[i] = blendColor(COL_COLD[i], COL_WARM[i], t);
+        } else if (temp < 88f) {
+            float t = (temp - 65f) / 23f;
+            for (int i = 0; i < 3; i++) out[i] = blendColor(COL_WARM[i], COL_TYPER[i], t);
+        } else {
+            float t = Math.min(1f, (temp - 88f) / 16f);
+            for (int i = 0; i < 3; i++) out[i] = blendColor(COL_TYPER[i], COL_HOT[i], t);
+        }
+        return out;
+    }
+
     private void updateThemeShaders() {
         if (w <= 0 || h <= 0) return;
-        int[] col = (theme == THEME_SAPPHIRE) ? COL_SAPPHIRE : (theme == THEME_ONYX) ? COL_ONYX : COL_TYPER;
+        int[] col;
+        if (heatTinted && !Float.isNaN(coolantTemp)) {
+            col = calculateHeatTintedColors(coolantTemp);
+        } else {
+            col = (theme == THEME_SAPPHIRE) ? COL_SAPPHIRE : (theme == THEME_ONYX) ? COL_ONYX : COL_TYPER;
+        }
         for (int i = 0; i < 3; i++) {
             int c = col[i] & 0x00FFFFFF;
             p[i].setShader(new RadialGradient(0, 0, r, c | 0x66000000, c, Shader.TileMode.CLAMP));
@@ -75,7 +137,18 @@ public class AuroraView extends View {
     }
 
     @Override protected void onDraw(Canvas c) {
-        int baseColor = (theme == THEME_SAPPHIRE) ? 0xFF060B12 : (theme == THEME_ONYX) ? 0xFF0A0C0E : BASE;
+        int baseColor;
+        if (heatTinted && !Float.isNaN(coolantTemp)) {
+            if (coolantTemp <= 50f) {
+                baseColor = 0xFF060B12; // Cool blue-grey dark base
+            } else if (coolantTemp >= 95f) {
+                baseColor = 0xFF0E0708; // Angry hot dark embers base
+            } else {
+                baseColor = BASE;
+            }
+        } else {
+            baseColor = (theme == THEME_SAPPHIRE) ? 0xFF060B12 : (theme == THEME_ONYX) ? 0xFF0A0C0E : BASE;
+        }
         c.drawColor(baseColor);
         float t = SystemClock.uptimeMillis() / 1000f;
         float m = ANIMATE ? t : 0f;
