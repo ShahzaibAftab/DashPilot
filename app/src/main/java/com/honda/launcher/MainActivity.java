@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothProfile;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -43,6 +44,7 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -110,8 +112,10 @@ public class MainActivity extends Activity implements LocationListener {
     private TextView badgeAtf, badgeFuel;
 
     // In-launcher Bluetooth and OBD status card views
-    private TextView obdStatusText, phoneStatusText;
+    private TextView obdStatusText, phoneStatusText, devHeaderBtn;
     private LinearLayout pairedDevicesContainer;
+    private boolean devicesListExpanded = false;
+    private boolean wasObdConnected = false;
     private String btTrack = null, btArtist = null;
 
     private volatile float gpsSpeed;
@@ -143,6 +147,7 @@ public class MainActivity extends Activity implements LocationListener {
                 String label = btArtist.isEmpty() ? btTrack : btTrack + " - " + btArtist;
                 nowPlaying.setText(label);
             }
+            updateObdStatusCard();
         }
     };
 
@@ -262,6 +267,7 @@ public class MainActivity extends Activity implements LocationListener {
         updateObdStatusCard();
 
         if (!obd.connected) {
+            wasObdConnected = false;
             // Keep gauges visible in sleek standby mode instead of an empty black void!
             gRpm.setValue(Float.NaN);
             gTemp.setValue(Float.NaN);
@@ -275,6 +281,13 @@ public class MainActivity extends Activity implements LocationListener {
             aurora.setDanger(false);
             updateGaugeBadges();
             return;
+        }
+
+        if (!wasObdConnected) {
+            wasObdConnected = true;
+            // Just connected to OBD2! Automatically hide available devices list under dropdown icon
+            devicesListExpanded = false;
+            updateDevicesDropdownUi();
         }
 
         boolean bad = gRpm.setValue(obd.rpm < 0 ? Float.NaN : obd.rpm);
@@ -321,14 +334,30 @@ public class MainActivity extends Activity implements LocationListener {
         if (phoneStatusText != null) {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             boolean musicActive = (am != null && am.isMusicActive());
-            if (musicActive || (btTrack != null && !btTrack.isEmpty())) {
+            int a2dpState = -1;
+            try {
+                BluetoothAdapter bad = BluetoothAdapter.getDefaultAdapter();
+                if (bad != null && bad.isEnabled()) {
+                    a2dpState = bad.getProfileConnectionState(BluetoothProfile.A2DP);
+                }
+            } catch (Throwable ignore) { }
+
+            boolean connected = (a2dpState == BluetoothProfile.STATE_CONNECTED) || musicActive || (btTrack != null && !btTrack.isEmpty());
+            boolean connecting = (a2dpState == BluetoothProfile.STATE_CONNECTING);
+
+            if (connected) {
                 phoneStatusText.setText("● Mobile Phone: AUDIO CONNECTED (A2DP)");
                 phoneStatusText.setTextColor(GREEN);
+            } else if (connecting) {
+                phoneStatusText.setText("◐ Mobile Phone: CONNECTING (A2DP)...");
+                phoneStatusText.setTextColor(AMBER);
             } else {
-                phoneStatusText.setText("○ Mobile Phone: READY / STANDBY (A2DP)");
+                phoneStatusText.setText("○ Mobile Phone: READY / STANDBY (Tap to connect)");
                 phoneStatusText.setTextColor(0xFFCFD8DC);
             }
         }
+
+        updateDevicesDropdownUi();
     }
 
     private void updateGaugeBadges() {
@@ -652,6 +681,7 @@ public class MainActivity extends Activity implements LocationListener {
             t.setText("Bluetooth hardware not detected.");
             t.setPadding(dp(8), dp(4), dp(8), dp(4));
             pairedDevicesContainer.addView(t);
+            updateDevicesDropdownUi();
             return;
         }
 
@@ -672,6 +702,7 @@ public class MainActivity extends Activity implements LocationListener {
             });
             btnEnable.setPadding(dp(12), dp(6), dp(12), dp(6));
             pairedDevicesContainer.addView(btnEnable);
+            updateDevicesDropdownUi();
             return;
         }
 
@@ -683,20 +714,27 @@ public class MainActivity extends Activity implements LocationListener {
             t.setText("No paired Bluetooth devices found.\nPair your OBD-II adapter or Mobile Phone in your car's Bluetooth menu first.");
             t.setPadding(dp(8), dp(6), dp(8), dp(6));
             pairedDevicesContainer.addView(t);
+            updateDevicesDropdownUi();
             return;
         }
 
         final String activeMac = (obd.manualDeviceAddress != null) ? obd.manualDeviceAddress : "";
+        final String savedPhoneMac = prefs.getString("phone_mac", "");
 
         for (final BluetoothDevice d : bonded) {
             final String name = (d.getName() != null && !d.getName().isEmpty()) ? d.getName() : "Unknown Device";
             final String mac = d.getAddress() != null ? d.getAddress() : "";
-            final boolean isSelected = !activeMac.isEmpty() ? mac.equalsIgnoreCase(activeMac) : isObdCandidate(name);
+            final boolean isLikelyObd = isObdCandidate(name);
+            final boolean isSelectedObd = !activeMac.isEmpty()
+                    ? mac.equalsIgnoreCase(activeMac)
+                    : (obd.connected && name.equalsIgnoreCase(obd.connectedDeviceName));
+            final boolean isLikelyPhone = !isLikelyObd && !isSelectedObd;
+            final boolean isSavedPhone = !mac.isEmpty() && mac.equalsIgnoreCase(savedPhoneMac);
 
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.HORIZONTAL);
             card.setGravity(Gravity.CENTER_VERTICAL);
-            card.setBackground(shape(isSelected ? 0x3300E676 : 0x1AFFFFFF));
+            card.setBackground(shape(isSelectedObd ? 0x3300E676 : 0x1AFFFFFF));
             card.setPadding(dp(12), dp(8), dp(12), dp(8));
 
             LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -707,27 +745,67 @@ public class MainActivity extends Activity implements LocationListener {
             LinearLayout info = new LinearLayout(this);
             info.setOrientation(LinearLayout.VERTICAL);
 
-            String icon = isObdCandidate(name) ? "🚗 " : "📱 ";
+            String icon = isLikelyObd || isSelectedObd ? "🚗 " : "📱 ";
             TextView tName = label(15, 0xFFFFFFFF);
             tName.setText(icon + name);
             tName.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
 
-            TextView tMac = label(12, isSelected ? GREEN : 0x8CFFFFFF);
-            tMac.setText(mac + (isSelected ? "  •  ACTIVE OBD2 SENSOR" : ""));
+            TextView tMac = label(12, isSelectedObd ? GREEN : 0x8CFFFFFF);
+            String macSubtitle = mac;
+            if (isSelectedObd) macSubtitle += "  •  ACTIVE OBD2 SENSOR";
+            else if (isSavedPhone) macSubtitle += "  •  SAVED PHONE";
+            tMac.setText(macSubtitle);
 
             info.addView(tName);
             info.addView(tMac);
             card.addView(info, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            // Right: Select / Status action
-            if (isSelected) {
+            // Right: Actions
+            if (isSelectedObd) {
                 TextView activeBadge = label(12, GREEN);
-                activeBadge.setText(" SELECTED OBD ✓ ");
+                activeBadge.setText(" ACTIVE OBD SENSOR ✓ ");
                 activeBadge.setTypeface(Typeface.DEFAULT_BOLD);
                 activeBadge.setBackground(badgeShape(0x3300E676));
                 activeBadge.setPadding(dp(8), dp(4), dp(8), dp(4));
                 card.addView(activeBadge);
+            } else if (isLikelyPhone) {
+                // Phone / Audio device: show CONNECT PHONE + secondary SET OBD
+                card.setClickable(true);
+                card.setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) {
+                        connectPhoneAudio(d);
+                    }
+                });
+
+                LinearLayout actRow = new LinearLayout(this);
+                actRow.setOrientation(LinearLayout.HORIZONTAL);
+                actRow.setGravity(Gravity.CENTER_VERTICAL);
+
+                TextView btnPhone = button("CONNECT PHONE", 12, new Runnable() {
+                    public void run() {
+                        connectPhoneAudio(d);
+                    }
+                });
+                btnPhone.setPadding(dp(10), dp(6), dp(10), dp(6));
+                actRow.addView(btnPhone);
+
+                TextView btnUse = button("SET OBD", 11, new Runnable() {
+                    public void run() {
+                        prefs.edit().putString("obd_mac", mac).apply();
+                        obd.setManualDevice(mac);
+                        toast("Set " + name + " as OBD sensor. Connecting...");
+                        refreshPairedDevicesList();
+                        updateObdStatusCard();
+                    }
+                });
+                btnUse.setPadding(dp(8), dp(4), dp(8), dp(4));
+                LinearLayout.LayoutParams ulp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                ulp.leftMargin = dp(6);
+                actRow.addView(btnUse, ulp);
+
+                card.addView(actRow);
             } else {
+                // OBD candidate device
                 TextView btnUse = button("SET AS OBD", 13, new Runnable() {
                     public void run() {
                         prefs.edit().putString("obd_mac", mac).apply();
@@ -743,6 +821,161 @@ public class MainActivity extends Activity implements LocationListener {
 
             pairedDevicesContainer.addView(card);
         }
+
+        updateDevicesDropdownUi();
+    }
+
+    private void updateDevicesDropdownUi() {
+        if (devHeaderBtn == null || pairedDevicesContainer == null) return;
+
+        BluetoothAdapter ad = null;
+        try { ad = BluetoothAdapter.getDefaultAdapter(); } catch (Throwable ignore) { }
+        int count = 0;
+        if (ad != null && ad.isEnabled()) {
+            try {
+                Set<BluetoothDevice> bonded = ad.getBondedDevices();
+                if (bonded != null) count = bonded.size();
+            } catch (Throwable ignore) { }
+        }
+
+        String countStr = count > 0 ? " [" + count + " PAIRED]" : "";
+
+        if (devicesListExpanded) {
+            devHeaderBtn.setText("▼  AVAILABLE BLUETOOTH DEVICES" + countStr + "  (TAP TO COLLAPSE)");
+            devHeaderBtn.setTextColor(0xFFFFFFFF);
+            pairedDevicesContainer.setVisibility(View.VISIBLE);
+        } else {
+            if (obd.connected) {
+                devHeaderBtn.setText("▶  AVAILABLE BLUETOOTH DEVICES" + countStr + "  (OBD CONNECTED • TAP TO EXPAND)");
+                devHeaderBtn.setTextColor(0xFFCFD8DC);
+            } else {
+                devHeaderBtn.setText("▶  AVAILABLE BLUETOOTH DEVICES" + countStr + "  (TAP TO EXPAND)");
+                devHeaderBtn.setTextColor(0xFFCFD8DC);
+            }
+            pairedDevicesContainer.setVisibility(View.GONE);
+        }
+    }
+
+    private void connectPhoneAudio(final BluetoothDevice device) {
+        if (device == null) {
+            toast("No device selected");
+            return;
+        }
+        final String name = (device.getName() != null && !device.getName().isEmpty())
+                ? device.getName() : device.getAddress();
+        toast("Connecting to " + name + " for Audio/Calls...");
+
+        final BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+        if (ad != null && ad.isEnabled()) {
+            // 1. Connect A2DP (Media / Music streaming)
+            try {
+                ad.getProfileProxy(getApplicationContext(), new BluetoothProfile.ServiceListener() {
+                    @Override
+                    public void onServiceConnected(int profile, BluetoothProfile proxy) {
+                        try {
+                            Method m = proxy.getClass().getMethod("connect", BluetoothDevice.class);
+                            m.setAccessible(true);
+                            m.invoke(proxy, device);
+                        } catch (Throwable ignore) { }
+                        try { ad.closeProfileProxy(profile, proxy); } catch (Throwable ignore) { }
+                    }
+                    @Override public void onServiceDisconnected(int profile) { }
+                }, BluetoothProfile.A2DP);
+            } catch (Throwable ignore) { }
+
+            // 2. Connect HEADSET (Phone calls)
+            try {
+                ad.getProfileProxy(getApplicationContext(), new BluetoothProfile.ServiceListener() {
+                    @Override
+                    public void onServiceConnected(int profile, BluetoothProfile proxy) {
+                        try {
+                            Method m = proxy.getClass().getMethod("connect", BluetoothDevice.class);
+                            m.setAccessible(true);
+                            m.invoke(proxy, device);
+                        } catch (Throwable ignore) { }
+                        try { ad.closeProfileProxy(profile, proxy); } catch (Throwable ignore) { }
+                    }
+                    @Override public void onServiceDisconnected(int profile) { }
+                }, BluetoothProfile.HEADSET);
+            } catch (Throwable ignore) { }
+        }
+
+        // 3. Broadcast Chinese head unit connection intents (Allwinner T3 / GOCSDK / Syu)
+        String[] actions = {
+                "com.gocsdk.action.CONNECT_DEVICE",
+                "com.syu.bt.action.CONNECT",
+                "net.easyconn.bt.connect",
+                "com.car.bt.action.CONNECT",
+                "android.bluetooth.device.action.CONNECT"
+        };
+        for (String act : actions) {
+            try {
+                Intent i = new Intent(act);
+                i.putExtra("mac", device.getAddress());
+                i.putExtra("address", device.getAddress());
+                i.putExtra(BluetoothDevice.EXTRA_DEVICE, device);
+                sendBroadcast(i);
+            } catch (Throwable ignore) { }
+        }
+
+        prefs.edit().putString("phone_mac", device.getAddress()).apply();
+        h.postDelayed(new Runnable() {
+            public void run() {
+                updateObdStatusCard();
+                refreshPairedDevicesList();
+            }
+        }, 1500);
+    }
+
+    private void connectFirstPairedPhone() {
+        BluetoothAdapter ad = null;
+        try { ad = BluetoothAdapter.getDefaultAdapter(); } catch (Throwable ignore) { }
+        if (ad == null || !ad.isEnabled()) {
+            toast("Bluetooth is OFF. Please enable Bluetooth.");
+            return;
+        }
+
+        Set<BluetoothDevice> bonded = null;
+        try { bonded = ad.getBondedDevices(); } catch (Throwable ignore) { }
+        if (bonded == null || bonded.isEmpty()) {
+            toast("No paired phone found. Opening Bluetooth pairing...");
+            openCarBluetooth();
+            return;
+        }
+
+        // 1. Try saved phone mac if available
+        String savedPhoneMac = prefs.getString("phone_mac", null);
+        if (savedPhoneMac != null && !savedPhoneMac.isEmpty()) {
+            for (BluetoothDevice d : bonded) {
+                if (savedPhoneMac.equalsIgnoreCase(d.getAddress())) {
+                    connectPhoneAudio(d);
+                    return;
+                }
+            }
+        }
+
+        // 2. Find first non-OBD device
+        String activeObdMac = (obd.manualDeviceAddress != null) ? obd.manualDeviceAddress : "";
+        for (BluetoothDevice d : bonded) {
+            String mac = d.getAddress();
+            String name = (d.getName() != null) ? d.getName() : "";
+            if (!mac.equalsIgnoreCase(activeObdMac) && !isObdCandidate(name)) {
+                connectPhoneAudio(d);
+                return;
+            }
+        }
+
+        // 3. Fallback: first device that is not the active OBD adapter
+        for (BluetoothDevice d : bonded) {
+            String mac = d.getAddress();
+            if (!mac.equalsIgnoreCase(activeObdMac)) {
+                connectPhoneAudio(d);
+                return;
+            }
+        }
+
+        toast("No paired phone found. Opening Bluetooth pairing...");
+        openCarBluetooth();
     }
 
     private boolean isObdCandidate(String name) {
@@ -840,73 +1073,113 @@ public class MainActivity extends Activity implements LocationListener {
         obdStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
         card.addView(obdStatusText);
 
-        // Control Buttons
+        // Control Buttons: CONNECT OBD | CONNECT PHONE | CAR BT APP | REFRESH
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setPadding(0, dp(8), 0, dp(8));
 
-        TextView btnConnect = button("CONNECT / RETRY", 13, new Runnable() {
+        TextView btnConnectObd = button("CONNECT OBD", 13, new Runnable() {
             public void run() {
                 obd.reconnectNow();
                 toast("Connecting to OBD-II...");
                 updateObdStatusCard();
             }
         });
-        btnConnect.setPadding(dp(12), dp(6), dp(12), dp(6));
+        btnConnectObd.setPadding(dp(8), dp(6), dp(8), dp(6));
 
-        TextView btnRefresh = button("REFRESH DEVICES", 13, new Runnable() {
+        TextView btnConnectPhone = button("CONNECT PHONE", 13, new Runnable() {
             public void run() {
-                refreshPairedDevicesList();
-                toast("Refreshed Bluetooth device list.");
+                connectFirstPairedPhone();
             }
         });
-        btnRefresh.setPadding(dp(12), dp(6), dp(12), dp(6));
+        btnConnectPhone.setPadding(dp(8), dp(6), dp(8), dp(6));
 
-        TextView btnCarBt = button("CAR BLUETOOTH APP", 13, new Runnable() {
+        TextView btnCarBt = button("CAR BT APP", 13, new Runnable() {
             public void run() {
                 openCarBluetooth();
             }
         });
-        btnCarBt.setPadding(dp(12), dp(6), dp(12), dp(6));
+        btnCarBt.setPadding(dp(8), dp(6), dp(8), dp(6));
 
-        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, W, 1f);
-        blp.rightMargin = dp(6);
-        btnRow.addView(btnConnect, blp);
+        TextView btnRefresh = button("REFRESH", 13, new Runnable() {
+            public void run() {
+                devicesListExpanded = true;
+                refreshPairedDevicesList();
+                toast("Refreshed Bluetooth device list.");
+            }
+        });
+        btnRefresh.setPadding(dp(8), dp(6), dp(8), dp(6));
+
+        LinearLayout.LayoutParams blp1 = new LinearLayout.LayoutParams(0, W, 1f);
+        blp1.rightMargin = dp(6);
+        btnRow.addView(btnConnectObd, blp1);
 
         LinearLayout.LayoutParams blp2 = new LinearLayout.LayoutParams(0, W, 1f);
         blp2.rightMargin = dp(6);
-        btnRow.addView(btnRefresh, blp2);
+        btnRow.addView(btnConnectPhone, blp2);
 
-        btnRow.addView(btnCarBt, lp(0, W, 1f));
+        LinearLayout.LayoutParams blp3 = new LinearLayout.LayoutParams(0, W, 1f);
+        blp3.rightMargin = dp(6);
+        btnRow.addView(btnCarBt, blp3);
+
+        btnRow.addView(btnRefresh, lp(0, W, 1f));
         card.addView(btnRow);
 
-        // In-line Paired Devices Container
-        TextView devHeader = label(13, 0xCCFFFFFF);
-        devHeader.setText("PAIRED BLUETOOTH DEVICES (tap 'SET AS OBD' to connect):");
-        devHeader.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
-        devHeader.setPadding(0, dp(4), 0, dp(4));
-        card.addView(devHeader);
+        // Phone Audio & Calls Section Card (Directly clickable!)
+        LinearLayout phoneCard = new LinearLayout(this);
+        phoneCard.setOrientation(LinearLayout.HORIZONTAL);
+        phoneCard.setGravity(Gravity.CENTER_VERTICAL);
+        phoneCard.setBackground(shape(0x1AFFFFFF));
+        phoneCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        phoneCard.setClickable(true);
+        phoneCard.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                connectFirstPairedPhone();
+            }
+        });
+
+        LinearLayout phoneInfo = new LinearLayout(this);
+        phoneInfo.setOrientation(LinearLayout.VERTICAL);
+
+        phoneStatusText = label(14, 0xFFCFD8DC);
+        phoneStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        phoneInfo.addView(phoneStatusText);
+
+        TextView phoneHint = label(12, 0x8CFFFFFF);
+        phoneHint.setText("Mobile Phone (Audio Streaming & Calls) • Tap to connect");
+        phoneHint.setPadding(0, dp(2), 0, 0);
+        phoneInfo.addView(phoneHint);
+
+        phoneCard.addView(phoneInfo, lp(0, W, 1f));
+
+        TextView btnPhoneAction = button("CONNECT PHONE", 13, new Runnable() {
+            public void run() {
+                connectFirstPairedPhone();
+            }
+        });
+        btnPhoneAction.setPadding(dp(14), dp(8), dp(14), dp(8));
+        phoneCard.addView(btnPhoneAction);
+
+        LinearLayout.LayoutParams pclp = new LinearLayout.LayoutParams(M, W);
+        pclp.topMargin = dp(4);
+        pclp.bottomMargin = dp(10);
+        card.addView(phoneCard, pclp);
+
+        // Dropdown Header for Available Devices
+        devHeaderBtn = button("", 13, new Runnable() {
+            public void run() {
+                devicesListExpanded = !devicesListExpanded;
+                updateDevicesDropdownUi();
+            }
+        });
+        devHeaderBtn.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        devHeaderBtn.setPadding(dp(12), dp(8), dp(12), dp(8));
+        card.addView(devHeaderBtn);
 
         pairedDevicesContainer = new LinearLayout(this);
         pairedDevicesContainer.setOrientation(LinearLayout.VERTICAL);
+        pairedDevicesContainer.setPadding(0, dp(6), 0, dp(2));
         card.addView(pairedDevicesContainer);
-
-        // Divider
-        View div = new View(this);
-        div.setBackgroundColor(0x2AFFFFFF);
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(M, dp(1));
-        dlp.topMargin = dp(8); dlp.bottomMargin = dp(8);
-        card.addView(div, dlp);
-
-        // Phone Audio Status
-        phoneStatusText = label(14, 0xFFCFD8DC);
-        phoneStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
-        card.addView(phoneStatusText);
-
-        TextView note = label(12, 0x8CFFFFFF);
-        note.setText("Dual Bluetooth: Mobile connects for Music/Calls, OBD-II connects for Telemetry at the same time.");
-        note.setPadding(0, dp(2), 0, 0);
-        card.addView(note);
 
         updateObdStatusCard();
         refreshPairedDevicesList();
