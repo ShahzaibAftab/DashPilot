@@ -596,10 +596,22 @@ public class MainActivity extends Activity implements LocationListener {
 
     // ---------------------------- now playing ----------------------------
     private void updateNowPlaying() {
+        SavedMusicManager sm = SavedMusicManager.get(this);
+        boolean autoSave = prefs.getBoolean("auto_save_music", true);
+
+        // 0. If local saved music is playing from car memory
+        if (sm.isPlaying()) {
+            SavedMusicManager.Track cur = sm.getCurrentlyPlaying();
+            String title = (cur != null) ? cur.getDisplayName() : "Car Memory Music";
+            nowPlaying.setText("▶ " + title);
+            return;
+        }
+
         AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         boolean isMusicActive = (am != null && am.isMusicActive());
 
         // 1. Try local MediaSession (Spotify, YouTube, media player running on unit)
+        String activeTitle = null, activeArtist = null;
         try {
             MediaSessionManager m = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
             List<MediaController> l = m.getActiveSessions(new ComponentName(this, NowPlayingService.class));
@@ -618,8 +630,8 @@ public class MainActivity extends Activity implements LocationListener {
                     String t = md.getString(MediaMetadata.METADATA_KEY_TITLE);
                     String a = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
                     if (t != null && !t.trim().isEmpty()) {
-                        nowPlaying.setText(a != null && !a.trim().isEmpty() ? t + " - " + a : t);
-                        return;
+                        activeTitle = t.trim();
+                        activeArtist = (a != null) ? a.trim() : "";
                     }
                 }
             }
@@ -629,27 +641,61 @@ public class MainActivity extends Activity implements LocationListener {
         } catch (Throwable ignore) { }
 
         // 2. If Bluetooth track info was received from phone
-        if (btTrack != null && !btTrack.isEmpty()) {
-            String display = (btArtist != null && !btArtist.isEmpty()) ? btTrack + " - " + btArtist : btTrack;
+        if (activeTitle == null && btTrack != null && !btTrack.isEmpty()) {
+            activeTitle = btTrack.trim();
+            activeArtist = (btArtist != null) ? btArtist.trim() : "";
+        }
+
+        if (activeTitle != null) {
+            String display = (activeArtist != null && !activeArtist.isEmpty())
+                    ? activeTitle + " - " + activeArtist : activeTitle;
+
+            // Auto-save logic
+            if (autoSave) {
+                sm.onTrackPlaying(activeTitle, activeArtist, true);
+                if (sm.isRecording()) {
+                    nowPlaying.setText("● SAVING • " + display);
+                    return;
+                }
+            }
             nowPlaying.setText(display);
             return;
         }
 
         // 3. Audio actively playing through car speakers (Chrome, Bluetooth stream, etc.)
         if (isMusicActive) {
+            if (autoSave) {
+                sm.onTrackPlaying("Bluetooth Audio Track", "", true);
+                if (sm.isRecording()) {
+                    nowPlaying.setText("● SAVING • Playing Audio (Bluetooth / Media)");
+                    return;
+                }
+            }
             nowPlaying.setText("Playing Audio (Bluetooth / Media)");
             return;
         }
+
+        // Not playing: stop any ongoing recording
+        sm.stopRecording();
 
         // 4. Truly idle
         if (needsAccess) {
             nowPlaying.setText("Tap to allow notification access");
         } else {
-            nowPlaying.setText("Nothing playing");
+            nowPlaying.setText("Nothing playing • Tap for Saved Music");
         }
     }
 
     private void transport(int what) {
+        SavedMusicManager sm = SavedMusicManager.get(this);
+        if (sm.isPlaying()) {
+            if (what == 0) sm.togglePlayPause();
+            else if (what > 0) sm.playNext();
+            else sm.playPrevious();
+            updateNowPlaying();
+            return;
+        }
+
         if (controller != null) {
             try {
                 MediaController.TransportControls t = controller.getTransportControls();
@@ -1443,6 +1489,7 @@ public class MainActivity extends Activity implements LocationListener {
         list.addView(tModesHeader);
 
         list.addView(gaugeCard("ECO / COMFORT MODE", "Dynamic color feedback: Green (safe/eco), Yellow (warning), Red (danger)", "eco_mode", null));
+        list.addView(gaugeCard("AUTO-SAVE BLUETOOTH MUSIC", "Automatically record & save songs played from phone into car internal memory", "auto_save_music", null));
 
         sv.addView(list);
         root.addView(sv, lp(M, 0, 1f));
@@ -1605,8 +1652,58 @@ public class MainActivity extends Activity implements LocationListener {
 
         LinearLayout.LayoutParams pclp = new LinearLayout.LayoutParams(M, W);
         pclp.topMargin = dp(4);
-        pclp.bottomMargin = dp(10);
+        pclp.bottomMargin = dp(8);
         card.addView(phoneCard, pclp);
+
+        // Car Memory Music section row in Bluetooth Hub
+        LinearLayout musicMemoryRow = new LinearLayout(this);
+        musicMemoryRow.setOrientation(LinearLayout.HORIZONTAL);
+        musicMemoryRow.setGravity(Gravity.CENTER_VERTICAL);
+        musicMemoryRow.setBackground(shape(0x14FFFFFF));
+        musicMemoryRow.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        LinearLayout musicInfo = new LinearLayout(this);
+        musicInfo.setOrientation(LinearLayout.VERTICAL);
+
+        TextView tMusicTitle = label(14, 0xFFFFFFFF);
+        tMusicTitle.setText("AUTO-SAVE BLUETOOTH MUSIC");
+        tMusicTitle.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+
+        final TextView tMusicSub = label(11, 0x8CFFFFFF);
+        boolean autoSaveMusic = prefs.getBoolean("auto_save_music", true);
+        tMusicSub.setText(autoSaveMusic ? "Auto-records songs played from phone into car internal memory" : "Auto-save disabled • Songs will not be stored in car storage");
+
+        musicInfo.addView(tMusicTitle);
+        musicInfo.addView(tMusicSub);
+        musicMemoryRow.addView(musicInfo, lp(0, W, 1f));
+
+        TextView btnOpenLibrary = button("CAR MEMORY", 12, new Runnable() {
+            public void run() {
+                SavedMusicManager.get(MainActivity.this).showLibraryDialog(MainActivity.this, new Runnable() {
+                    public void run() { updateNowPlaying(); }
+                });
+            }
+        });
+        btnOpenLibrary.setPadding(dp(10), dp(6), dp(10), dp(6));
+        LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(W, W);
+        olp.rightMargin = dp(8);
+        musicMemoryRow.addView(btnOpenLibrary, olp);
+
+        Switch swMusicSave = new Switch(this);
+        swMusicSave.setChecked(autoSaveMusic);
+        swMusicSave.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.edit().putBoolean("auto_save_music", isChecked).apply();
+                tMusicSub.setText(isChecked ? "Auto-records songs played from phone into car internal memory" : "Auto-save disabled • Songs will not be stored in car storage");
+                toast(isChecked ? "Auto-save music to car memory enabled" : "Auto-save music disabled");
+                updateNowPlaying();
+            }
+        });
+        musicMemoryRow.addView(swMusicSave, new LinearLayout.LayoutParams(W, W));
+
+        LinearLayout.LayoutParams mrlp = new LinearLayout.LayoutParams(M, W);
+        mrlp.bottomMargin = dp(10);
+        card.addView(musicMemoryRow, mrlp);
 
         // Dropdown Header for Available Devices
         devHeaderBtn = button("", 13, new Runnable() {
@@ -1942,10 +2039,25 @@ public class MainActivity extends Activity implements LocationListener {
                 if (needsAccess) {
                     try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)); }
                     catch (Throwable ignore) { }
+                } else {
+                    SavedMusicManager.get(MainActivity.this).showLibraryDialog(MainActivity.this, new Runnable() {
+                        public void run() { updateNowPlaying(); }
+                    });
                 }
             }
         });
         bar.addView(nowPlaying, lp(0, M, 1f));
+
+        TextView btnSavedMusic = button("CAR MEMORY", 12, new Runnable() {
+            public void run() {
+                SavedMusicManager.get(MainActivity.this).showLibraryDialog(MainActivity.this, new Runnable() {
+                    public void run() { updateNowPlaying(); }
+                });
+            }
+        });
+        btnSavedMusic.setPadding(dp(8), dp(4), dp(8), dp(4));
+        bar.addView(btnSavedMusic, barLp());
+
         bar.addView(barBtn("PREV", -1), barLp());
         bar.addView(barBtn("PLAY / PAUSE", 0), barLp());
         bar.addView(barBtn("NEXT", 1), barLp());
