@@ -177,11 +177,18 @@ public class SavedMusicManager {
         startRecording(sanitizedTitle, sanitizedArtist);
     }
 
+    public static String sanitizeFilename(String raw) {
+        if (raw == null) return "Unknown_Track";
+        String s = raw.replaceAll("[\\\\/:*?\"<>|]+", "_").trim();
+        s = s.replaceAll("^_+|_+$", "").trim();
+        return s.isEmpty() ? "Unknown_Track" : s;
+    }
+
     private synchronized void startRecording(String title, String artist) {
         try {
             File dir = getStorageDir();
             String name = (artist != null && !artist.isEmpty()) ? title + " - " + artist : title;
-            name = name.replaceAll("[\\\\/:*?\"<>|]", "_");
+            name = sanitizeFilename(name);
             File outFile = new File(dir, name + ".m4a");
 
             // If file already exists and is complete (> 100KB), don't overwrite

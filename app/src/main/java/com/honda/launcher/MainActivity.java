@@ -515,6 +515,7 @@ public class MainActivity extends Activity implements LocationListener {
 
     private int getBatteryHealthColor(float volts) {
         if (Float.isNaN(volts) || volts <= 0) return 0x8CFFFFFF;
+        if (volts > 14.7f) return 0xFFFF1744; // Red (Overcharging / regulator fault)
         if (volts >= 13.5f && volts <= 14.7f) return 0xFF00E676; // Green
         if (volts >= 12.3f) return 0xFF00E676; // Green
         if (volts >= 11.9f) return 0xFFFFD600; // Yellow

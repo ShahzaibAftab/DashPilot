@@ -28,10 +28,15 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
 
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     lint {
         abortOnError false
     }
 }
 
 dependencies {
+    testImplementation 'junit:junit:4.13.2'
 }

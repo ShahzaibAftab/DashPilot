@@ -75,16 +75,25 @@ public class ObdManager {
         }
     }
 
+    private volatile Thread workerThread;
+
     public synchronized void start() {
         final int id = ++gen;
         running = true;
-        new Thread(new Runnable() { public void run() { loop(id); } }, "obd").start();
+        Thread t = new Thread(new Runnable() { public void run() { loop(id); } }, "obd");
+        t.setDaemon(true);
+        workerThread = t;
+        t.start();
     }
 
     public synchronized void stop() {
         running = false;
         gen++;
         closeQuietly(sock);
+        if (workerThread != null) {
+            try { workerThread.interrupt(); } catch (Throwable ignore) { }
+            workerThread = null;
+        }
     }
 
     private boolean alive(int id) { return running && id == gen; }
@@ -310,7 +319,9 @@ public class ObdManager {
     }
 
     private String send(InputStream in, OutputStream out, String cmd, int timeoutMs) throws Exception {
-        while (in.available() > 0) in.read();
+        while (in.available() > 0) {
+            if (in.read() < 0) break;
+        }
         out.write((cmd + "\r").getBytes());
         out.flush();
         StringBuilder sb = new StringBuilder();
