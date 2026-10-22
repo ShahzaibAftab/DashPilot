@@ -8,6 +8,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
 
     <application
         android:label="@string/app_name"
@@ -15,6 +16,34 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
+
+        <receiver
+            android:name=".BootAndPowerReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                <action android:name="autochips.intent.action.ACC_ON"/>
+                <action android:name="com.syu.action.ACC_ON"/>
+                <action android:name="com.microntek.bootcheck"/>
+                <action android:name="android.intent.action.ACTION_POWER_CONNECTED"/>
+                <action android:name="android.intent.action.REVERSE"/>
+                <action android:name="com.allwinner.action.BACK_CAR_START"/>
+                <action android:name="com.allwinner.action.BACK_CAR_STOP"/>
+                <action android:name="com.syu.action.REVERSE_ON"/>
+                <action android:name="com.syu.action.REVERSE_OFF"/>
+                <action android:name="autochips.intent.action.REVERSE_ON"/>
+                <action android:name="autochips.intent.action.REVERSE_OFF"/>
+                <action android:name="com.microntek.reverse"/>
+                <action android:name="com.tw.action.REVERSE"/>
+                <action android:name="com.fyt.action.REVERSE_STATUS"/>
+                <action android:name="action.honda.reverse"/>
+                <action android:name="com.car.reverse.state"/>
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".MainActivity"
