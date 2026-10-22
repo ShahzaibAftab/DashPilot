@@ -290,22 +290,46 @@ public class MainActivity extends Activity implements LocationListener {
             updateDevicesDropdownUi();
         }
 
-        boolean bad = gRpm.setValue(obd.rpm < 0 ? Float.NaN : obd.rpm);
-        bad |= gTemp.setValue(obd.coolant == -999 ? Float.NaN : obd.coolant);
-        bad |= gBatt.setValue(obd.volts < 0 ? Float.NaN : obd.volts);
-        bad |= gLoad.setValue(obd.load < 0 ? Float.NaN : obd.load);
-        bad |= gAtf.setValue(obd.atfTemp == -999 ? Float.NaN : obd.atfTemp);
+        boolean sRpm  = prefs.getBoolean("show_rpm", true);
+        boolean sCool = prefs.getBoolean("show_coolant", true);
+        boolean sBatt = prefs.getBoolean("show_battery", true);
+        boolean sLoad = prefs.getBoolean("show_load", true);
+        boolean sAtf  = prefs.getBoolean("show_atf", true);
+        boolean sFuel = prefs.getBoolean("show_fuel", true);
+        boolean sDtc  = prefs.getBoolean("show_dtc", true);
+
+        boolean bad = false;
+
+        boolean rpmBad = gRpm.setValue((!sRpm || obd.rpm < 0) ? Float.NaN : obd.rpm);
+        if (sRpm) bad |= rpmBad;
+
+        boolean coolBad = gTemp.setValue((!sCool || obd.coolant == -999) ? Float.NaN : obd.coolant);
+        if (sCool) bad |= coolBad;
+
+        boolean battBad = gBatt.setValue((!sBatt || obd.volts < 0) ? Float.NaN : obd.volts);
+        if (sBatt) bad |= battBad;
+
+        boolean loadBad = gLoad.setValue((!sLoad || obd.load < 0) ? Float.NaN : obd.load);
+        if (sLoad) bad |= loadBad;
+
+        boolean atfBad = gAtf.setValue((!sAtf || obd.atfTemp == -999) ? Float.NaN : obd.atfTemp);
+        if (sAtf) bad |= atfBad;
 
         // Fuel gauge
-        fuelGauge.setValue(obd.fuelLevel < 0 ? Float.NaN : obd.fuelLevel);
+        fuelGauge.setValue((!sFuel || obd.fuelLevel < 0) ? Float.NaN : obd.fuelLevel);
 
         // DTC warning
-        if (obd.dtcScanned) {
-            dtcWarning.setScanning(false);
-            dtcWarning.setCodes(obd.dtcCodes);
-            bad |= dtcWarning.hasCodes();
+        if (sDtc) {
+            if (obd.dtcScanned) {
+                dtcWarning.setScanning(false);
+                dtcWarning.setCodes(obd.dtcCodes);
+                bad |= dtcWarning.hasCodes();
+            } else {
+                dtcWarning.setScanning(true);
+            }
         } else {
-            dtcWarning.setScanning(true);
+            dtcWarning.setScanning(false);
+            dtcWarning.setCodes(new ArrayList<String>());
         }
 
         speedo.setWarn(bad);
@@ -407,6 +431,9 @@ public class MainActivity extends Activity implements LocationListener {
         if (row3 != null) row3.setVisibility((sAtf || sFuel || sDtc) ? View.VISIBLE : View.GONE);
 
         if (tmBox != null) tmBox.setVisibility(sTm ? View.VISIBLE : View.GONE);
+
+        // Immediately update OBD status and clear danger if disabled!
+        updateObd();
     }
 
     // ---------------------------- 0-100 timer ----------------------------
