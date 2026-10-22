@@ -2,17 +2,16 @@ package com.honda.launcher;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
@@ -49,6 +48,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 public class MainActivity extends Activity implements LocationListener {
 
@@ -60,7 +60,8 @@ public class MainActivity extends Activity implements LocationListener {
 
     // Common Chinese Android head-unit package names
     static final String[] PKG_BT = {
-            "com.gocsdk", "com.syu.bt", "com.car.bt", "com.ts.bt", "com.forfan.bt", "com.allwinner.bluetooth"
+            "com.gocsdk", "com.syu.bt", "com.car.bt", "com.ts.bt", "com.forfan.bt", "com.allwinner.bluetooth",
+            "cn.manstep.phonemirrorbox", "com.zjinnova.zlink"
     };
     static final String[] PKG_SETTINGS = {
             "com.syu.canbus", "com.car.settings", "com.ts.carsettings", "com.allwinner.carsettings"
@@ -108,8 +109,9 @@ public class MainActivity extends Activity implements LocationListener {
     // Dynamic badges for unsupported/supported detection
     private TextView badgeAtf, badgeFuel;
 
-    // OBD and Bluetooth connection card views
+    // In-launcher Bluetooth and OBD status card views
     private TextView obdStatusText, phoneStatusText;
+    private LinearLayout pairedDevicesContainer;
     private String btTrack = null, btArtist = null;
 
     private volatile float gpsSpeed;
@@ -308,12 +310,10 @@ public class MainActivity extends Activity implements LocationListener {
                 obdStatusText.setText("● OBD-II: CONNECTED (" + dev + ")");
                 obdStatusText.setTextColor(GREEN);
             } else if (obd.state == ObdManager.STATE_CONNECTING) {
-                String dev = (obd.connectedDeviceName != null && !obd.connectedDeviceName.isEmpty())
-                        ? " to " + obd.connectedDeviceName : "";
-                obdStatusText.setText("◐ OBD-II: CONNECTING" + dev + "...");
+                obdStatusText.setText("◐ OBD-II: " + obd.statusMessage);
                 obdStatusText.setTextColor(AMBER);
             } else {
-                obdStatusText.setText("○ OBD-II: DISCONNECTED");
+                obdStatusText.setText("○ OBD-II: " + obd.statusMessage);
                 obdStatusText.setTextColor(0xFFCFD8DC);
             }
         }
@@ -325,48 +325,10 @@ public class MainActivity extends Activity implements LocationListener {
                 phoneStatusText.setText("● Mobile Phone: AUDIO CONNECTED (A2DP)");
                 phoneStatusText.setTextColor(GREEN);
             } else {
-                phoneStatusText.setText("○ Mobile Phone: READY / STANDBY");
+                phoneStatusText.setText("○ Mobile Phone: READY / STANDBY (A2DP)");
                 phoneStatusText.setTextColor(0xFFCFD8DC);
             }
         }
-    }
-
-    private void showDevicePicker() {
-        BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
-        if (ad == null || !ad.isEnabled()) {
-            toast("Bluetooth is off. Please turn on Bluetooth in Settings.");
-            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
-            return;
-        }
-
-        final List<BluetoothDevice> bonded = new ArrayList<>(ad.getBondedDevices());
-        if (bonded.isEmpty()) {
-            toast("No paired Bluetooth devices found. Pair OBD-II in Android Settings first.");
-            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
-            return;
-        }
-
-        String[] names = new String[bonded.size()];
-        for (int i = 0; i < bonded.size(); i++) {
-            BluetoothDevice d = bonded.get(i);
-            String n = d.getName();
-            names[i] = (n != null ? n : "Unknown Device") + " (" + d.getAddress() + ")";
-        }
-
-        AlertDialog.Builder b = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK);
-        b.setTitle("Select your OBD-II Adapter");
-        b.setItems(names, new DialogInterface.OnClickListener() {
-            @Override public void onClick(DialogInterface dialog, int which) {
-                BluetoothDevice chosen = bonded.get(which);
-                prefs.edit().putString("obd_mac", chosen.getAddress()).apply();
-                obd.setManualDevice(chosen.getAddress());
-                String label = chosen.getName() != null ? chosen.getName() : chosen.getAddress();
-                toast("Connecting to " + label + "...");
-                updateObdStatusCard();
-            }
-        });
-        b.setNegativeButton("Cancel", null);
-        b.show();
     }
 
     private void updateGaugeBadges() {
@@ -469,11 +431,13 @@ public class MainActivity extends Activity implements LocationListener {
             List<MediaController> l = m.getActiveSessions(new ComponentName(this, NowPlayingService.class));
             needsAccess = false;
             controller = null;
-            for (MediaController c : l) {
-                PlaybackState st = c.getPlaybackState();
-                if (st != null && st.getState() == PlaybackState.STATE_PLAYING) { controller = c; break; }
+            if (l != null) {
+                for (MediaController c : l) {
+                    PlaybackState st = c.getPlaybackState();
+                    if (st != null && st.getState() == PlaybackState.STATE_PLAYING) { controller = c; break; }
+                }
+                if (controller == null && !l.isEmpty()) controller = l.get(0);
             }
-            if (controller == null && !l.isEmpty()) controller = l.get(0);
             if (controller != null) {
                 MediaMetadata md = controller.getMetadata();
                 if (md != null) {
@@ -488,7 +452,7 @@ public class MainActivity extends Activity implements LocationListener {
         } catch (SecurityException e) {
             needsAccess = true;
             controller = null;
-        }
+        } catch (Throwable ignore) { }
 
         // 2. If Bluetooth track info was received from phone
         if (btTrack != null && !btTrack.isEmpty()) {
@@ -513,26 +477,30 @@ public class MainActivity extends Activity implements LocationListener {
 
     private void transport(int what) {
         if (controller != null) {
-            MediaController.TransportControls t = controller.getTransportControls();
-            if (what < 0) t.skipToPrevious();
-            else if (what > 0) t.skipToNext();
-            else {
-                PlaybackState st = controller.getPlaybackState();
-                if (st != null && st.getState() == PlaybackState.STATE_PLAYING) t.pause(); else t.play();
-            }
-            return;
+            try {
+                MediaController.TransportControls t = controller.getTransportControls();
+                if (what < 0) t.skipToPrevious();
+                else if (what > 0) t.skipToNext();
+                else {
+                    PlaybackState st = controller.getPlaybackState();
+                    if (st != null && st.getState() == PlaybackState.STATE_PLAYING) t.pause(); else t.play();
+                }
+                return;
+            } catch (Throwable ignore) { }
         }
 
         // Global media key dispatch for active Bluetooth audio or background players
         int keyCode = (what < 0) ? KeyEvent.KEYCODE_MEDIA_PREVIOUS
                     : (what > 0) ? KeyEvent.KEYCODE_MEDIA_NEXT
                     : KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
-        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-        if (am != null) {
-            long now = SystemClock.uptimeMillis();
-            am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
-            am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
-        }
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                long now = SystemClock.uptimeMillis();
+                am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
+                am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
+            }
+        } catch (Throwable ignore) { }
     }
 
     // ---------------------------- GPS ----------------------------
@@ -558,10 +526,53 @@ public class MainActivity extends Activity implements LocationListener {
     private boolean launchFirst(String... pkgs) {
         for (String p : pkgs) {
             if (p == null || p.isEmpty()) continue;
-            Intent i = getPackageManager().getLaunchIntentForPackage(p);
-            if (i != null) { startActivity(i); return true; }
+            try {
+                Intent i = getPackageManager().getLaunchIntentForPackage(p);
+                if (i != null) { startActivity(i); return true; }
+            } catch (Throwable ignore) { }
         }
         return false;
+    }
+
+    private void openCarBluetooth() {
+        // 1. Try known Chinese car head unit Bluetooth packages
+        for (String p : PKG_BT) {
+            try {
+                Intent i = getPackageManager().getLaunchIntentForPackage(p);
+                if (i != null) { startActivity(i); return; }
+            } catch (Throwable ignore) {}
+        }
+
+        // 2. Search installed packages for any bluetooth or phone app
+        try {
+            PackageManager pm = getPackageManager();
+            List<ResolveInfo> list = pm.queryIntentActivities(
+                    new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0);
+            if (list != null) {
+                for (ResolveInfo ri : list) {
+                    String pkg = ri.activityInfo.packageName.toLowerCase(Locale.US);
+                    String cls = ri.activityInfo.name.toLowerCase(Locale.US);
+                    if (pkg.contains("blue") || pkg.contains("bt") || cls.contains("blue") || cls.contains("bt") || pkg.contains("phone")) {
+                        Intent i = pm.getLaunchIntentForPackage(ri.activityInfo.packageName);
+                        if (i != null) { startActivity(i); return; }
+                    }
+                }
+            }
+        } catch (Throwable ignore) {}
+
+        // 3. Fallback: Android Bluetooth settings
+        try {
+            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+            return;
+        } catch (Throwable ignore) {}
+
+        // 4. Fallback: Android System settings
+        try {
+            startActivity(new Intent(Settings.ACTION_SETTINGS));
+            return;
+        } catch (Throwable ignore) {}
+
+        toast("Bluetooth is managed directly in DashPilot below.");
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
@@ -593,10 +604,11 @@ public class MainActivity extends Activity implements LocationListener {
                 pageGauges.setVisibility(View.GONE);
                 pageApps.setVisibility(View.GONE);
             }
-        } else if (target == 1) { // Page 1: Gauges Settings
+        } else if (target == 1) { // Page 1: Gauges Settings & In-Launcher Bluetooth
             pageGauges.setVisibility(View.VISIBLE);
             updateGaugeBadges();
             updateObdStatusCard();
+            refreshPairedDevicesList();
             if (animate) {
                 float startX = (prev == 0) ? w : -w;
                 pageGauges.setTranslationX(startX);
@@ -627,7 +639,121 @@ public class MainActivity extends Activity implements LocationListener {
         }
     }
 
-    // ---------------------------- Page 1: Gauge Toggles & ECU Support ----------------------------
+    // ---------------------------- In-Launcher Bluetooth Device Manager ----------------------------
+    private void refreshPairedDevicesList() {
+        if (pairedDevicesContainer == null) return;
+        pairedDevicesContainer.removeAllViews();
+
+        BluetoothAdapter ad = null;
+        try { ad = BluetoothAdapter.getDefaultAdapter(); } catch (Throwable ignore) { }
+
+        if (ad == null) {
+            TextView t = label(13, 0x8CFFFFFF);
+            t.setText("Bluetooth hardware not detected.");
+            t.setPadding(dp(8), dp(4), dp(8), dp(4));
+            pairedDevicesContainer.addView(t);
+            return;
+        }
+
+        if (!ad.isEnabled()) {
+            TextView t = label(13, AMBER);
+            t.setText("Bluetooth is OFF. Tap below to enable.");
+            t.setPadding(dp(8), dp(4), dp(8), dp(4));
+            pairedDevicesContainer.addView(t);
+
+            TextView btnEnable = button("ENABLE BLUETOOTH", 13, new Runnable() {
+                public void run() {
+                    try {
+                        BluetoothAdapter.getDefaultAdapter().enable();
+                        toast("Enabling Bluetooth...");
+                        h.postDelayed(new Runnable() { public void run() { refreshPairedDevicesList(); updateObdStatusCard(); } }, 1500);
+                    } catch (Throwable ignore) { }
+                }
+            });
+            btnEnable.setPadding(dp(12), dp(6), dp(12), dp(6));
+            pairedDevicesContainer.addView(btnEnable);
+            return;
+        }
+
+        Set<BluetoothDevice> bonded = null;
+        try { bonded = ad.getBondedDevices(); } catch (Throwable ignore) { }
+
+        if (bonded == null || bonded.isEmpty()) {
+            TextView t = label(13, 0x8CFFFFFF);
+            t.setText("No paired Bluetooth devices found.\nPair your OBD-II adapter or Mobile Phone in your car's Bluetooth menu first.");
+            t.setPadding(dp(8), dp(6), dp(8), dp(6));
+            pairedDevicesContainer.addView(t);
+            return;
+        }
+
+        final String activeMac = (obd.manualDeviceAddress != null) ? obd.manualDeviceAddress : "";
+
+        for (final BluetoothDevice d : bonded) {
+            final String name = (d.getName() != null && !d.getName().isEmpty()) ? d.getName() : "Unknown Device";
+            final String mac = d.getAddress() != null ? d.getAddress() : "";
+            final boolean isSelected = !activeMac.isEmpty() ? mac.equalsIgnoreCase(activeMac) : isObdCandidate(name);
+
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setBackground(shape(isSelected ? 0x3300E676 : 0x1AFFFFFF));
+            card.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            clp.bottomMargin = dp(6);
+            card.setLayoutParams(clp);
+
+            // Left: Device icon, name and MAC
+            LinearLayout info = new LinearLayout(this);
+            info.setOrientation(LinearLayout.VERTICAL);
+
+            String icon = isObdCandidate(name) ? "🚗 " : "📱 ";
+            TextView tName = label(15, 0xFFFFFFFF);
+            tName.setText(icon + name);
+            tName.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+
+            TextView tMac = label(12, isSelected ? GREEN : 0x8CFFFFFF);
+            tMac.setText(mac + (isSelected ? "  •  ACTIVE OBD2 SENSOR" : ""));
+
+            info.addView(tName);
+            info.addView(tMac);
+            card.addView(info, lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+            // Right: Select / Status action
+            if (isSelected) {
+                TextView activeBadge = label(12, GREEN);
+                activeBadge.setText(" SELECTED OBD ✓ ");
+                activeBadge.setTypeface(Typeface.DEFAULT_BOLD);
+                activeBadge.setBackground(badgeShape(0x3300E676));
+                activeBadge.setPadding(dp(8), dp(4), dp(8), dp(4));
+                card.addView(activeBadge);
+            } else {
+                TextView btnUse = button("SET AS OBD", 13, new Runnable() {
+                    public void run() {
+                        prefs.edit().putString("obd_mac", mac).apply();
+                        obd.setManualDevice(mac);
+                        toast("Set " + name + " as OBD sensor. Connecting...");
+                        refreshPairedDevicesList();
+                        updateObdStatusCard();
+                    }
+                });
+                btnUse.setPadding(dp(10), dp(6), dp(10), dp(6));
+                card.addView(btnUse);
+            }
+
+            pairedDevicesContainer.addView(card);
+        }
+    }
+
+    private boolean isObdCandidate(String name) {
+        if (name == null) return false;
+        String u = name.toUpperCase(Locale.US);
+        return u.contains("OBD") || u.contains("ELM") || u.contains("LINK")
+                || u.contains("VGATE") || u.contains("VIEFLO") || u.contains("KONNWEI")
+                || u.contains("SCAN") || u.contains("DIAG");
+    }
+
+    // ---------------------------- Page 1: Gauge Toggles & In-Launcher Bluetooth ----------------------------
     private LinearLayout buildGaugesPage() {
         final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
         LinearLayout root = new LinearLayout(this);
@@ -645,7 +771,7 @@ public class MainActivity extends Activity implements LocationListener {
         back.setPadding(dp(16), dp(8), dp(16), dp(8));
 
         TextView title = label(24, 0xFFFFFFFF);
-        title.setText("GAUGE DISPLAY TOGGLES");
+        title.setText("GAUGE & BLUETOOTH SETTINGS");
         title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
         title.setPadding(dp(16), 0, 0, 0);
 
@@ -659,7 +785,7 @@ public class MainActivity extends Activity implements LocationListener {
 
         // Subtitle hint
         TextView hint = label(12, 0x8CFFFFFF);
-        hint.setText("Swipe left again for native car apps • Toggle which gauges appear on your home screen");
+        hint.setText("Manage OBD-II & Phone Bluetooth directly below • Toggle which gauges appear on your home screen");
         hint.setPadding(dp(4), dp(4), 0, dp(10));
         root.addView(hint);
 
@@ -670,8 +796,14 @@ public class MainActivity extends Activity implements LocationListener {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
 
-        // Top: Dedicated OBD-II & Phone Bluetooth Management Card
+        // Top: Dedicated In-Launcher Bluetooth & OBD-II Management Card
         list.addView(buildBluetoothHubCard());
+
+        TextView tGaugesHeader = label(16, 0xFFFFFFFF);
+        tGaugesHeader.setText("DASHBOARD GAUGES SHOW / HIDE");
+        tGaugesHeader.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        tGaugesHeader.setPadding(dp(2), dp(8), 0, dp(8));
+        list.addView(tGaugesHeader);
 
         TextView[] bAtf = new TextView[1];
         TextView[] bFuel = new TextView[1];
@@ -703,68 +835,81 @@ public class MainActivity extends Activity implements LocationListener {
         clp.bottomMargin = dp(14);
         card.setLayoutParams(clp);
 
-        // OBD2 Section Header
+        // OBD2 Status Line
         obdStatusText = label(16, 0xFFCFD8DC);
         obdStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
         card.addView(obdStatusText);
 
-        // OBD Action Buttons row
+        // Control Buttons
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(0, dp(6), 0, dp(10));
+        btnRow.setPadding(0, dp(8), 0, dp(8));
 
-        TextView btnConnect = button("CONNECT NOW", 14, new Runnable() {
+        TextView btnConnect = button("CONNECT / RETRY", 13, new Runnable() {
             public void run() {
                 obd.reconnectNow();
-                toast("Searching & connecting to OBD-II...");
+                toast("Connecting to OBD-II...");
                 updateObdStatusCard();
             }
         });
-        btnConnect.setPadding(dp(14), dp(8), dp(14), dp(8));
+        btnConnect.setPadding(dp(12), dp(6), dp(12), dp(6));
 
-        TextView btnChoose = button("CHOOSE OBD DEVICE", 14, new Runnable() {
-            public void run() { showDevicePicker(); }
+        TextView btnRefresh = button("REFRESH DEVICES", 13, new Runnable() {
+            public void run() {
+                refreshPairedDevicesList();
+                toast("Refreshed Bluetooth device list.");
+            }
         });
-        btnChoose.setPadding(dp(14), dp(8), dp(14), dp(8));
+        btnRefresh.setPadding(dp(12), dp(6), dp(12), dp(6));
+
+        TextView btnCarBt = button("CAR BLUETOOTH APP", 13, new Runnable() {
+            public void run() {
+                openCarBluetooth();
+            }
+        });
+        btnCarBt.setPadding(dp(12), dp(6), dp(12), dp(6));
 
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, W, 1f);
-        blp.rightMargin = dp(8);
+        blp.rightMargin = dp(6);
         btnRow.addView(btnConnect, blp);
-        btnRow.addView(btnChoose, lp(0, W, 1f));
+
+        LinearLayout.LayoutParams blp2 = new LinearLayout.LayoutParams(0, W, 1f);
+        blp2.rightMargin = dp(6);
+        btnRow.addView(btnRefresh, blp2);
+
+        btnRow.addView(btnCarBt, lp(0, W, 1f));
         card.addView(btnRow);
+
+        // In-line Paired Devices Container
+        TextView devHeader = label(13, 0xCCFFFFFF);
+        devHeader.setText("PAIRED BLUETOOTH DEVICES (tap 'SET AS OBD' to connect):");
+        devHeader.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        devHeader.setPadding(0, dp(4), 0, dp(4));
+        card.addView(devHeader);
+
+        pairedDevicesContainer = new LinearLayout(this);
+        pairedDevicesContainer.setOrientation(LinearLayout.VERTICAL);
+        card.addView(pairedDevicesContainer);
 
         // Divider
         View div = new View(this);
         div.setBackgroundColor(0x2AFFFFFF);
-        card.addView(div, new LinearLayout.LayoutParams(M, dp(1)));
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(M, dp(1));
+        dlp.topMargin = dp(8); dlp.bottomMargin = dp(8);
+        card.addView(div, dlp);
 
-        // Phone Audio Section
+        // Phone Audio Status
         phoneStatusText = label(14, 0xFFCFD8DC);
         phoneStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
-        phoneStatusText.setPadding(0, dp(10), 0, dp(4));
         card.addView(phoneStatusText);
-
-        LinearLayout phoneRow = new LinearLayout(this);
-        phoneRow.setOrientation(LinearLayout.HORIZONTAL);
-        phoneRow.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView note = label(12, 0x8CFFFFFF);
         note.setText("Dual Bluetooth: Mobile connects for Music/Calls, OBD-II connects for Telemetry at the same time.");
-
-        TextView btnOpenBt = button("OPEN PHONE BT", 13, new Runnable() {
-            public void run() {
-                if (!launchFirst(PKG_BT)) startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
-            }
-        });
-        btnOpenBt.setPadding(dp(12), dp(6), dp(12), dp(6));
-
-        phoneRow.addView(note, lp(0, W, 1f));
-        LinearLayout.LayoutParams oblp = new LinearLayout.LayoutParams(W, W);
-        oblp.leftMargin = dp(8);
-        phoneRow.addView(btnOpenBt, oblp);
-        card.addView(phoneRow);
+        note.setPadding(0, dp(2), 0, 0);
+        card.addView(note);
 
         updateObdStatusCard();
+        refreshPairedDevicesList();
         return card;
     }
 
@@ -868,21 +1013,32 @@ public class MainActivity extends Activity implements LocationListener {
                 "EQUALIZER / DSP", "ALL INSTALLED APPS"
         };
         Runnable[] actions = {
-                new Runnable() { public void run() { if (!launchFirst(PKG_BT)) startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); } },
-                new Runnable() { public void run() { if (!launchFirst(PKG_SETTINGS)) startActivity(new Intent(Settings.ACTION_SETTINGS)); } },
+                new Runnable() { public void run() { openCarBluetooth(); } },
+                new Runnable() { public void run() {
+                    if (!launchFirst(PKG_SETTINGS)) {
+                        try { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+                        catch (Throwable t) { toast("Settings app not accessible"); }
+                    }
+                } },
                 new Runnable() { public void run() { if (!launchFirst(PKG_RADIO)) toast("Car radio app not found"); } },
                 new Runnable() { public void run() {
                     if (!launchFirst(PKG_MUSIC)) {
                         try { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_MUSIC)); }
-                        catch (Exception e) { toast("No music app found"); }
+                        catch (Throwable e) { toast("No music app found"); }
                     }
                 } },
                 new Runnable() { public void run() { if (!launchFirst(PKG_VIDEO)) toast("Video player not found"); } },
                 new Runnable() { public void run() { if (!launchFirst(PKG_MAPS)) toast("No maps app installed"); } },
                 new Runnable() { public void run() {
-                    if (!launchFirst(PKG_EQ)) startActivity(new Intent(MainActivity.this, EqualizerActivity.class));
+                    if (!launchFirst(PKG_EQ)) {
+                        try { startActivity(new Intent(MainActivity.this, EqualizerActivity.class)); }
+                        catch (Throwable ignore) { }
+                    }
                 } },
-                new Runnable() { public void run() { startActivity(new Intent(MainActivity.this, AppDrawerActivity.class)); } }
+                new Runnable() { public void run() {
+                    try { startActivity(new Intent(MainActivity.this, AppDrawerActivity.class)); }
+                    catch (Throwable ignore) { }
+                } }
         };
 
         LinearLayout grid = new LinearLayout(this);
@@ -1051,7 +1207,10 @@ public class MainActivity extends Activity implements LocationListener {
         nowPlaying.setText("Nothing playing");
         nowPlaying.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                if (needsAccess) startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+                if (needsAccess) {
+                    try { startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)); }
+                    catch (Throwable ignore) { }
+                }
             }
         });
         bar.addView(nowPlaying, lp(0, M, 1f));
@@ -1078,7 +1237,7 @@ public class MainActivity extends Activity implements LocationListener {
         edge.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { goToPage(1, true); } });
         wrap.addView(edge, new FrameLayout.LayoutParams(dp(28), dp(160), Gravity.END | Gravity.CENTER_VERTICAL));
 
-        // Page 1: Gauge Toggles & ECU Support
+        // Page 1: Gauge Toggles & In-Launcher Bluetooth
         pageGauges = buildGaugesPage();
         pageGauges.setVisibility(View.GONE);
         wrap.addView(pageGauges, new FrameLayout.LayoutParams(M, M));

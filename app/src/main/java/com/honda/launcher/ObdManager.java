@@ -28,6 +28,7 @@ public class ObdManager {
     public volatile int state = STATE_DISCONNECTED;
     public volatile String connectedDeviceName = "";
     public volatile String manualDeviceAddress;
+    public volatile String statusMessage = "Disconnected";
 
     public volatile boolean connected;
     public volatile int rpm = -1, coolant = -999, speed = -1, load = -1;
@@ -53,7 +54,9 @@ public class ObdManager {
     }
 
     public synchronized void reconnectNow() {
-        stop();
+        running = false;
+        gen++;
+        closeQuietly(sock);
         start();
     }
 
@@ -86,6 +89,15 @@ public class ObdManager {
 
                 if (dev == null) {
                     state = STATE_DISCONNECTED;
+                    if (ad == null) {
+                        statusMessage = "Bluetooth hardware not detected";
+                    } else if (!ad.isEnabled()) {
+                        statusMessage = "Bluetooth is turned off in Settings";
+                    } else if (manualDeviceAddress != null && !manualDeviceAddress.isEmpty()) {
+                        statusMessage = "Saved device (" + manualDeviceAddress + ") not in range";
+                    } else {
+                        statusMessage = "No OBD device selected. Tap 'SET AS OBD' below.";
+                    }
                     Thread.sleep(4000);
                     continue;
                 }
@@ -93,6 +105,7 @@ public class ObdManager {
                 state = STATE_CONNECTING;
                 connectedDeviceName = (dev.getName() != null && !dev.getName().isEmpty())
                         ? dev.getName() : dev.getAddress();
+                statusMessage = "Opening connection to " + connectedDeviceName + "...";
 
                 ad.cancelDiscovery();
                 BluetoothSocket s = dev.createRfcommSocketToServiceRecord(SPP);
@@ -109,6 +122,7 @@ public class ObdManager {
                 InputStream in = s.getInputStream();
                 OutputStream out = s.getOutputStream();
 
+                statusMessage = "Initializing ELM327 protocol on " + connectedDeviceName + "...";
                 send(in, out, "ATZ", 3000);
                 send(in, out, "ATE0", 1500);
                 send(in, out, "ATL0", 1500);
@@ -117,6 +131,7 @@ public class ObdManager {
                 send(in, out, "ATSP0", 1500);
                 connected = true;
                 state = STATE_CONNECTED;
+                statusMessage = "Connected to " + connectedDeviceName + " (Live Telemetry)";
 
                 // ---- Detect supported PIDs once on connect ----
                 // PID 0x00 returns bitmask of PIDs 01-20 support
@@ -206,7 +221,7 @@ public class ObdManager {
             } catch (InterruptedException e) {
                 return;
             } catch (Exception e) {
-                // connection lost or failed: fall through and retry
+                statusMessage = "Connection error (" + (e.getMessage() != null ? e.getMessage() : "socket closed") + "). Retrying...";
             } finally {
                 connected = false;
                 state = STATE_DISCONNECTED;
