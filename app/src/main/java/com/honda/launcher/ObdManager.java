@@ -28,6 +28,9 @@ public class ObdManager {
     public volatile float fuelLevel = -1f;       // fuel tank level 0-100 %
     public volatile List<String> dtcCodes = new ArrayList<>();  // active DTC codes
     public volatile boolean dtcScanned;          // true once DTC scan has completed at least once
+    public volatile boolean hasFuelSupported;    // true if ECU confirms PID 012F
+    public volatile boolean hasAtfSupported;     // true if ECU confirms PID 015C or 01B4
+    public volatile boolean pidsDetected;        // true once PID bitmask scan has completed
 
     private volatile boolean running;
     private volatile int gen;
@@ -114,6 +117,10 @@ public class ObdManager {
                     }
                 }
 
+                hasFuelSupported = hasFuel;
+                hasAtfSupported = hasAtf5C || hasAtfB4;
+                pidsDetected = true;
+
                 int loopCount = 0;
 
                 while (alive(id)) {
@@ -167,6 +174,9 @@ public class ObdManager {
                 // connection lost or failed: fall through and retry
             } finally {
                 connected = false;
+                pidsDetected = false;
+                hasFuelSupported = false;
+                hasAtfSupported = false;
                 rpm = -1; coolant = -999; speed = -1; load = -1; volts = -1f;
                 atfTemp = -999; fuelLevel = -1f;
                 dtcCodes = new ArrayList<>(); dtcScanned = false;
@@ -222,7 +232,9 @@ public class ObdManager {
             String n = d.getName();
             if (n == null) continue;
             n = n.toUpperCase(Locale.US);
-            if (n.contains("OBD") || n.contains("ELM") || n.contains("LINK")) return d;
+            if (n.contains("OBD") || n.contains("ELM") || n.contains("LINK")
+                    || n.contains("VGATE") || n.contains("VIEFLO") || n.contains("KONNWEI")
+                    || n.contains("SCAN") || n.contains("DIAG")) return d;
         }
         return null;
     }

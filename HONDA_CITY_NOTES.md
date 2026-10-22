@@ -121,3 +121,38 @@ Mark each as worked / broke / missing:
 
 ## 11. Ideas not built yet
 Trip meter and top speed, speed-limit alert, throttle bar and peak RPM, album art, prayer-time countdown (all offered, you chose only the 0-100 timer for now).
+
+## 12. In-Car Live Testing Feedback & Roadmap (Documented — Pending Implementation)
+*Observed during real-world testing on the car head unit:*
+
+1. **Remove Unbuilt App Shortcuts:**
+   - Remove hardcoded app placeholders/shortcuts from the swipe-left page that are not built or installed on the unit. Keep only installed apps or functional screens.
+
+2. **Convert Swipe-Left Page to Gauge Control & Settings Panel:**
+   - Transform the current swipe-left apps screen into a dedicated Dashboard Customization & Control Hub.
+   - Add individual On/Off toggle switches for each gauge on the home screen:
+     - RPM Gauge toggle
+     - Coolant Temp Gauge toggle
+     - Battery Voltage Gauge toggle
+     - Engine Load Gauge toggle
+     - ATF Transmission Temp Gauge toggle
+     - Fuel Tank Level Gauge toggle
+     - DTC Fault Code Warning View toggle
+   - Persist driver preferences using `SharedPreferences` so gauge visibility is saved across ignition cycles.
+
+3. **Music / Now Playing Detection (Phone Audio):**
+   - **Issue:** Music was playing from phone over the head unit audio, but DashPilot displayed "Nothing playing".
+   - **Root Cause & Fix:**
+     - Chinese Allwinner T3 head units route Bluetooth audio directly through the MCU and vendor BT app (`com.gocsdk`, `com.syu.bt`, etc.) rather than standard Android `MediaSession` notifications.
+     - Fix plan: Add BroadcastReceivers for common AVRCP metadata intents (`com.android.music.metachanged`, `com.android.music.playstatechanged`, AVRCP broadcasts) and check for vendor head-unit BT broadcast actions. Verify if Notification Listener permissions are enabled in Android settings.
+
+4. **Fuel Tank Gauge in Reserve / Percentage Missing:**
+   - **Issue:** Car is in fuel reserve, but the fuel gauge is not displaying the remaining fuel percentage.
+   - **Root Cause & Fix:**
+     - Standard OBD2 PID `012F` (Fuel Tank Level) is frequently not implemented by Honda City ECUs or returned as `NO DATA`.
+     - When PID `012F` is unsupported, the gauge displays `--%` or remains hidden.
+     - Fix plan: Verify Honda-specific fuel PID support, add a fallback reserve indicator (warning the driver when fuel is in reserve), or add a manual tank capacity / reset option in the swipe-left settings panel.
+
+5. **Bluetooth Auto-Pairing & Reconnect Controls:**
+   - **Auto-connect on Launch:** Automatically connect to the paired OBD2 ELM327 scanner and trigger Bluetooth auto-connect with the driver's phone as soon as DashPilot starts.
+   - **Manual Controls in Swipe-Left Panel:** Add manual "Reconnect OBD-II" and "Reconnect Phone" buttons with live connection status chips (Connected / Disconnected / Scanning).

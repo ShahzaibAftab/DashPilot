@@ -2,9 +2,11 @@ package com.honda.launcher;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
@@ -13,6 +15,7 @@ import android.graphics.drawable.StateListDrawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
 import android.media.session.MediaSessionManager;
@@ -25,12 +28,14 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -43,20 +48,38 @@ import java.util.Locale;
 
 public class MainActivity extends Activity implements LocationListener {
 
-    // ===================== CONFIG: edit these =====================
-    /** Block YouTube and Browser while the car is moving. Set false to allow. */
-    static final boolean BLOCK_WEB_WHILE_MOVING = true;
-    static final int MOVING_KMH = 5;
-    /** Package of the stock car Bluetooth/phone app. Leave "" to open Bluetooth settings. */
-    static final String PHONE_PACKAGE = "";
-    static final String NEWPIPE = "org.schabi.newpipe";
-    static final String[] BROWSERS = {"mark.via.gp", "mark.via"};
-    static final String[] MAPS = {"net.osmand.plus", "net.osmand",
-            "com.google.android.apps.mapslite", "com.google.android.apps.maps"};
+    // ===================== CONFIG =====================
     static final int RED = 0xFFE4002B;
-    // ==============================================================
+    static final int GREEN = 0xFF00E676;
+    static final int AMBER = 0xFFFFB300;
+    static final int GREY = 0xFF90A4AE;
 
-    private static final int T_READY = 0, T_RUN = 1, T_DONE = 2;
+    // Common Chinese Android head-unit package names
+    static final String[] PKG_BT = {
+            "com.gocsdk", "com.syu.bt", "com.car.bt", "com.ts.bt", "com.forfan.bt", "com.allwinner.bluetooth"
+    };
+    static final String[] PKG_SETTINGS = {
+            "com.syu.canbus", "com.car.settings", "com.ts.carsettings", "com.allwinner.carsettings"
+    };
+    static final String[] PKG_RADIO = {
+            "com.syu.radio", "com.car.radio", "com.ts.radio", "com.forfan.radio", "com.allwinner.radio", "com.android.fmradio"
+    };
+    static final String[] PKG_MUSIC = {
+            "com.syu.music", "com.car.music", "com.ts.music", "com.android.music"
+    };
+    static final String[] PKG_VIDEO = {
+            "com.syu.video", "com.car.video", "com.ts.video", "com.android.gallery3d"
+    };
+    static final String[] PKG_MAPS = {
+            "com.google.android.apps.maps", "com.google.android.apps.mapslite", "net.osmand.plus", "net.osmand",
+            "com.waze", "com.autonavi.amapauto"
+    };
+    static final String[] PKG_EQ = {
+            "com.syu.eq", "com.car.eq", "com.ts.eq", "com.forfan.eq"
+    };
+    // ===================================================
+
+    private static final int T_IDLE = 0, T_ARMED = 1, T_RUN = 2, T_DONE = 3;
 
     private final Handler h = new Handler(Looper.getMainLooper());
     private final SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.getDefault());
@@ -66,7 +89,8 @@ public class MainActivity extends Activity implements LocationListener {
     private View tmBox;
     private SpeedometerView speedo;
     private AuroraView aurora;
-    private LinearLayout obdPanel, page;
+    private LinearLayout obdPanel, row1, row2, row3;
+    private LinearLayout pageGauges, pageApps;
     private FrameLayout wrap;
     private MiniGaugeView gRpm, gTemp, gBatt, gLoad, gAtf;
     private FuelGaugeView fuelGauge;
@@ -74,7 +98,11 @@ public class MainActivity extends Activity implements LocationListener {
     private final ObdManager obd = new ObdManager();
     private MediaController controller;
     private SharedPreferences prefs;
-    private boolean needsAccess, pageOpen;
+    private boolean needsAccess;
+    private int curPage = 0; // 0 = Home, 1 = Gauges, 2 = Native Apps
+
+    // Dynamic badges for unsupported/supported detection
+    private TextView badgeAtf, badgeFuel;
 
     private volatile float gpsSpeed;
     private volatile long lastGps;
@@ -86,11 +114,27 @@ public class MainActivity extends Activity implements LocationListener {
     private long tStart, lastT;
     private float lastV, tBest = -1f, tRes;
 
+    // Bluetooth music receiver for AVRCP metadata from phone
+    private final BroadcastReceiver btMusicReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String track = intent.getStringExtra("track");
+            if (track == null) track = intent.getStringExtra("title");
+            String artist = intent.getStringExtra("artist");
+            if (track != null && !track.trim().isEmpty()) {
+                String label = track.trim();
+                if (artist != null && !artist.trim().isEmpty()) label = label + " - " + artist.trim();
+                nowPlaying.setText(label);
+            }
+        }
+    };
+
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("launcher", MODE_PRIVATE);
         buildUi();
-        EqManager.get(this);   // re-applies the saved equalizer levels
+        applyGaugeToggles();
+        EqManager.get(this);   // re-applies saved equalizer levels
         if (Build.VERSION.SDK_INT >= 23 && !hasLoc()) {
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
         }
@@ -101,6 +145,18 @@ public class MainActivity extends Activity implements LocationListener {
         startGps();
         obd.start();
         h.post(tick);
+
+        IntentFilter f = new IntentFilter();
+        f.addAction("com.android.music.metachanged");
+        f.addAction("com.android.music.playstatechanged");
+        f.addAction("com.android.music.playbackcomplete");
+        f.addAction("com.htc.music.metachanged");
+        f.addAction("com.real.IMP.metachanged");
+        f.addAction("com.sonyericsson.music.metachanged");
+        f.addAction("com.samsung.sec.android.MusicPlayer.metachanged");
+        f.addAction("android.bluetooth.a2dp.profile.action.PLAYING_STATE_CHANGED");
+        f.addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
+        registerReceiver(btMusicReceiver, f);
     }
 
     @Override protected void onPause() {
@@ -109,26 +165,43 @@ public class MainActivity extends Activity implements LocationListener {
         obd.stop();
         try { ((LocationManager) getSystemService(LOCATION_SERVICE)).removeUpdates(this); }
         catch (Exception ignore) { }
+        try { unregisterReceiver(btMusicReceiver); }
+        catch (Exception ignore) { }
     }
 
     @Override protected void onNewIntent(Intent i) {   // Home pressed while we are open
         super.onNewIntent(i);
-        if (pageOpen) closePage(false);
+        if (curPage != 0) goToPage(0, false);
     }
 
     @Override public void onRequestPermissionsResult(int rc, String[] p, int[] r) { startGps(); }
 
-    @Override public void onBackPressed() { if (pageOpen) closePage(true); }
+    @Override public void onBackPressed() {
+        if (curPage == 2) goToPage(1, true);
+        else if (curPage == 1) goToPage(0, true);
+    }
 
-    /** Swipe left opens the apps page, swipe right closes it. Touches are not consumed. */
+    /**
+     * Swipe gestures:
+     * Home (0) -> swipe left -> Gauges Page (1)
+     * Gauges Page (1) -> swipe left -> Native Apps (2)
+     * Native Apps (2) -> swipe right -> Gauges Page (1)
+     * Gauges Page (1) -> swipe right -> Home (0)
+     */
     @Override public boolean dispatchTouchEvent(MotionEvent e) {
         int a = e.getActionMasked();
-        if (a == MotionEvent.ACTION_DOWN) { downX = e.getRawX(); downY = e.getRawY(); }
-        else if (a == MotionEvent.ACTION_UP) {
+        if (a == MotionEvent.ACTION_DOWN) {
+            downX = e.getRawX(); downY = e.getRawY();
+        } else if (a == MotionEvent.ACTION_UP) {
             float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
-            if (Math.abs(dx) > dp(120) && Math.abs(dy) < Math.abs(dx) * 0.7f) {
-                if (dx < 0 && !pageOpen) openPage();
-                else if (dx > 0 && pageOpen) closePage(true);
+            if (Math.abs(dx) > dp(100) && Math.abs(dy) < Math.abs(dx) * 0.7f) {
+                if (dx < 0) { // swipe left
+                    if (curPage == 0) goToPage(1, true);
+                    else if (curPage == 1) goToPage(2, true);
+                } else if (dx > 0) { // swipe right
+                    if (curPage == 2) goToPage(1, true);
+                    else if (curPage == 1) goToPage(0, true);
+                }
             }
         }
         return super.dispatchTouchEvent(e);
@@ -159,15 +232,21 @@ public class MainActivity extends Activity implements LocationListener {
 
     private void updateObd() {
         if (!obd.connected) {
-            obdPanel.setVisibility(View.INVISIBLE);
-            speedo.setWarn(false);
-            aurora.setDanger(false);
+            // Keep gauges visible in sleek standby mode instead of an empty black void!
+            gRpm.setValue(Float.NaN);
+            gTemp.setValue(Float.NaN);
+            gBatt.setValue(Float.NaN);
+            gLoad.setValue(Float.NaN);
+            gAtf.setValue(Float.NaN);
+            fuelGauge.setValue(Float.NaN);
             dtcWarning.setScanning(false);
             dtcWarning.setCodes(new ArrayList<String>());
-            fuelGauge.setValue(Float.NaN);
+            speedo.setWarn(false);
+            aurora.setDanger(false);
+            updateGaugeBadges();
             return;
         }
-        obdPanel.setVisibility(View.VISIBLE);
+
         boolean bad = gRpm.setValue(obd.rpm < 0 ? Float.NaN : obd.rpm);
         bad |= gTemp.setValue(obd.coolant == -999 ? Float.NaN : obd.coolant);
         bad |= gBatt.setValue(obd.volts < 0 ? Float.NaN : obd.volts);
@@ -186,8 +265,74 @@ public class MainActivity extends Activity implements LocationListener {
             dtcWarning.setScanning(true);
         }
 
-        speedo.setWarn(bad);      // any gauge in danger: big speed number turns red
-        aurora.setDanger(bad);    // and the screen edge pulses red
+        speedo.setWarn(bad);
+        aurora.setDanger(bad);
+
+        // Update PID support badges if on gauge page
+        updateGaugeBadges();
+    }
+
+    private void updateGaugeBadges() {
+        if (badgeAtf != null) {
+            if (obd.connected) {
+                if (obd.hasAtfSupported) {
+                    badgeAtf.setText("SUPPORTED (PID 015C)");
+                    badgeAtf.setTextColor(GREEN);
+                    badgeAtf.setBackground(badgeShape(0x3300E676));
+                } else {
+                    badgeAtf.setText("NOT SUPPORTED BY ECU (Honda CAN required)");
+                    badgeAtf.setTextColor(AMBER);
+                    badgeAtf.setBackground(badgeShape(0x33FFB300));
+                }
+            } else {
+                badgeAtf.setText("REQUIRES OBD2 (PID 015C / 01B4)");
+                badgeAtf.setTextColor(GREY);
+                badgeAtf.setBackground(badgeShape(0x3390A4AE));
+            }
+        }
+        if (badgeFuel != null) {
+            if (obd.connected) {
+                if (obd.hasFuelSupported) {
+                    badgeFuel.setText("SUPPORTED (PID 012F)");
+                    badgeFuel.setTextColor(GREEN);
+                    badgeFuel.setBackground(badgeShape(0x3300E676));
+                } else {
+                    badgeFuel.setText("NOT SUPPORTED BY ECU (Reserve sensor only)");
+                    badgeFuel.setTextColor(AMBER);
+                    badgeFuel.setBackground(badgeShape(0x33FFB300));
+                }
+            } else {
+                badgeFuel.setText("REQUIRES OBD2 (PID 012F)");
+                badgeFuel.setTextColor(GREY);
+                badgeFuel.setBackground(badgeShape(0x3390A4AE));
+            }
+        }
+    }
+
+    private void applyGaugeToggles() {
+        boolean sRpm = prefs.getBoolean("show_rpm", true);
+        boolean sCool = prefs.getBoolean("show_coolant", true);
+        boolean sBatt = prefs.getBoolean("show_battery", true);
+        boolean sLoad = prefs.getBoolean("show_load", true);
+        boolean sAtf = prefs.getBoolean("show_atf", true);
+        boolean sFuel = prefs.getBoolean("show_fuel", true);
+        boolean sDtc = prefs.getBoolean("show_dtc", true);
+        boolean sTm = prefs.getBoolean("timer_on", true);
+
+        if (gRpm != null) gRpm.setVisibility(sRpm ? View.VISIBLE : View.GONE);
+        if (gTemp != null) gTemp.setVisibility(sCool ? View.VISIBLE : View.GONE);
+        if (row1 != null) row1.setVisibility((sRpm || sCool) ? View.VISIBLE : View.GONE);
+
+        if (gBatt != null) gBatt.setVisibility(sBatt ? View.VISIBLE : View.GONE);
+        if (gLoad != null) gLoad.setVisibility(sLoad ? View.VISIBLE : View.GONE);
+        if (row2 != null) row2.setVisibility((sBatt || sLoad) ? View.VISIBLE : View.GONE);
+
+        if (gAtf != null) gAtf.setVisibility(sAtf ? View.VISIBLE : View.GONE);
+        if (fuelGauge != null) fuelGauge.setVisibility(sFuel ? View.VISIBLE : View.GONE);
+        if (dtcWarning != null) dtcWarning.setVisibility(sDtc ? View.VISIBLE : View.GONE);
+        if (row3 != null) row3.setVisibility((sAtf || sFuel || sDtc) ? View.VISIBLE : View.GONE);
+
+        if (tmBox != null) tmBox.setVisibility(sTm ? View.VISIBLE : View.GONE);
     }
 
     // ---------------------------- 0-100 timer ----------------------------
@@ -199,32 +344,35 @@ public class MainActivity extends Activity implements LocationListener {
 
     private void timerStep(float v) {
         long now = SystemClock.elapsedRealtime();
-        if (tState == T_READY && v >= 1f) {
-            tStart = (lastT > 0 && lastV < 1f && v > lastV)
-                    ? lastT + (long) ((1f - lastV) / (v - lastV) * (now - lastT)) : now;
+        if (tState == T_IDLE && v <= 1f) {
+            tState = T_ARMED;
+        } else if (tState == T_ARMED && v > 2f) {
+            tStart = now;
             tState = T_RUN;
             h.post(timerTick);
-        } else if (tState == T_RUN) {
-            if (v < 0.5f) tState = T_READY;
-            else if (v >= 100f) {
-                long cross = (lastV < 100f && v > lastV)
-                        ? lastT + (long) ((100f - lastV) / (v - lastV) * (now - lastT)) : now;
-                tRes = (cross - tStart) / 1000f;
-                tState = T_DONE;
-                if (tBest < 0 || tRes < tBest) tBest = tRes;
+        } else if (tState == T_RUN && v >= 100f) {
+            tState = T_DONE;
+            float dt = (now - tStart) / 1000f;
+            if (v > lastV && lastT > tStart) {
+                float frac = (100f - lastV) / (v - lastV);
+                dt = (lastT - tStart) / 1000f + frac * (now - lastT) / 1000f;
             }
-        } else if (tState == T_DONE && v < 0.5f) {
-            tState = T_READY;
+            tRes = dt;
+            if (tBest < 0 || dt < tBest) { tBest = dt; prefs.edit().putFloat("best", tBest).apply(); }
+        } else if (tState == T_DONE && v <= 1f) {
+            tState = T_ARMED;
         }
         lastV = v; lastT = now;
         showTimer(now);
     }
 
     private void showTimer(long now) {
-        if (tmBox.getVisibility() != View.VISIBLE) return;
-        tmVal.setText(tState == T_READY ? "Ready"
-                : String.format(Locale.US, "%.2f s", tState == T_RUN ? (now - tStart) / 1000f : tRes));
-        tmBest.setText(tBest < 0 ? "" : String.format(Locale.US, "Best %.2f s", tBest));
+        if (tBest < 0) tBest = prefs.getFloat("best", -1f);
+        tmBest.setText(tBest > 0 ? String.format(Locale.US, "Best: %.2fs", tBest) : "Best: --");
+        if (tState == T_IDLE)  tmVal.setText("Ready");
+        else if (tState == T_ARMED) tmVal.setText("Launch");
+        else if (tState == T_RUN)   tmVal.setText(String.format(Locale.US, "%.1fs", (now - tStart) / 1000f));
+        else                        tmVal.setText(String.format(Locale.US, "%.2fs", tRes));
     }
 
     // ---------------------------- now playing ----------------------------
@@ -239,7 +387,7 @@ public class MainActivity extends Activity implements LocationListener {
                 if (st != null && st.getState() == PlaybackState.STATE_PLAYING) { controller = c; break; }
             }
             if (controller == null && !l.isEmpty()) controller = l.get(0);
-            if (controller == null) { nowPlaying.setText("Nothing playing"); return; }
+            if (controller == null) return; // Keep any existing Bluetooth track text intact
             MediaMetadata md = controller.getMetadata();
             String t = null;
             if (md != null) {
@@ -247,22 +395,35 @@ public class MainActivity extends Activity implements LocationListener {
                 String a = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
                 if (a != null) t = (t == null) ? a : t + " - " + a;
             }
-            nowPlaying.setText(t == null ? "Playing" : t);
+            if (t != null) nowPlaying.setText(t);
         } catch (SecurityException e) {
             needsAccess = true;
             controller = null;
-            nowPlaying.setText("Tap here to allow now-playing (notification access)");
+            nowPlaying.setText("Tap to allow notification access");
         }
     }
 
     private void transport(int what) {
-        if (controller == null) return;
-        MediaController.TransportControls t = controller.getTransportControls();
-        if (what < 0) t.skipToPrevious();
-        else if (what > 0) t.skipToNext();
-        else {
-            PlaybackState st = controller.getPlaybackState();
-            if (st != null && st.getState() == PlaybackState.STATE_PLAYING) t.pause(); else t.play();
+        if (controller != null) {
+            MediaController.TransportControls t = controller.getTransportControls();
+            if (what < 0) t.skipToPrevious();
+            else if (what > 0) t.skipToNext();
+            else {
+                PlaybackState st = controller.getPlaybackState();
+                if (st != null && st.getState() == PlaybackState.STATE_PLAYING) t.pause(); else t.play();
+            }
+            return;
+        }
+
+        // Global media key dispatch for active Bluetooth audio or background players
+        int keyCode = (what < 0) ? KeyEvent.KEYCODE_MEDIA_PREVIOUS
+                    : (what > 0) ? KeyEvent.KEYCODE_MEDIA_NEXT
+                    : KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
+        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (am != null) {
+            long now = SystemClock.uptimeMillis();
+            am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
+            am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
         }
     }
 
@@ -286,7 +447,6 @@ public class MainActivity extends Activity implements LocationListener {
     @Override public void onProviderEnabled(String p) { }
     @Override public void onProviderDisabled(String p) { }
 
-    // ---------------------------- actions ----------------------------
     private boolean launchFirst(String... pkgs) {
         for (String p : pkgs) {
             if (p == null || p.isEmpty()) continue;
@@ -296,110 +456,264 @@ public class MainActivity extends Activity implements LocationListener {
         return false;
     }
 
-    private void openUrl(String url) {
-        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-        for (String p : BROWSERS) {
-            if (getPackageManager().getLaunchIntentForPackage(p) != null) { i.setPackage(p); break; }
-        }
-        try { startActivity(i); } catch (Exception e) { toast("No browser installed"); }
-    }
-
-    private boolean blocked() {
-        if (BLOCK_WEB_WHILE_MOVING && curSpeed > MOVING_KMH) { toast("Disabled while driving"); return true; }
-        return false;
-    }
-
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 
-    private void onMusic() {
-        try { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_MUSIC)); }
-        catch (Exception e) { toast("No music app found"); }
-    }
-    private void onYouTube() { if (blocked()) return; if (!launchFirst(NEWPIPE)) openUrl("https://m.youtube.com"); }
-    private void onBrowser() { if (blocked()) return; if (!launchFirst(BROWSERS)) openUrl("https://www.google.com"); }
-    private void onPhone() { if (!launchFirst(PHONE_PACKAGE)) startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); }
-    private void onMaps() { if (!launchFirst(MAPS)) toast("No maps app installed"); }
-
-    // ---------------------------- apps page ----------------------------
-    private int pageWidth() { return wrap.getWidth() > 0 ? wrap.getWidth() : getResources().getDisplayMetrics().widthPixels; }
-
-    private void openPage() {
-        pageOpen = true;
-        page.setVisibility(View.VISIBLE);
-        page.setTranslationX(pageWidth());
-        page.animate().translationX(0).setDuration(200);
+    // ---------------------------- Multi-page Navigation ----------------------------
+    private int pageWidth() {
+        return wrap != null && wrap.getWidth() > 0 ? wrap.getWidth() : getResources().getDisplayMetrics().widthPixels;
     }
 
-    private void closePage(boolean animate) {
-        pageOpen = false;
-        page.animate().cancel();
-        if (animate) {
-            page.animate().translationX(pageWidth()).setDuration(200).withEndAction(new Runnable() {
-                public void run() { if (!pageOpen) page.setVisibility(View.GONE); }
-            });
-        } else {
-            page.setVisibility(View.GONE);
+    private void goToPage(int target, boolean animate) {
+        if (target == curPage) return;
+        int prev = curPage;
+        curPage = target;
+        int w = pageWidth();
+
+        if (target == 0) { // Home
+            if (animate) {
+                if (pageGauges.getVisibility() == View.VISIBLE) {
+                    pageGauges.animate().translationX(w).setDuration(220).withEndAction(new Runnable() {
+                        public void run() { pageGauges.setVisibility(View.GONE); }
+                    });
+                }
+                if (pageApps.getVisibility() == View.VISIBLE) {
+                    pageApps.animate().translationX(w).setDuration(220).withEndAction(new Runnable() {
+                        public void run() { pageApps.setVisibility(View.GONE); }
+                    });
+                }
+            } else {
+                pageGauges.setVisibility(View.GONE);
+                pageApps.setVisibility(View.GONE);
+            }
+        } else if (target == 1) { // Page 1: Gauges Settings
+            pageGauges.setVisibility(View.VISIBLE);
+            updateGaugeBadges();
+            if (animate) {
+                float startX = (prev == 0) ? w : -w;
+                pageGauges.setTranslationX(startX);
+                pageGauges.animate().translationX(0).setDuration(220);
+                if (pageApps.getVisibility() == View.VISIBLE) {
+                    pageApps.animate().translationX(w).setDuration(220).withEndAction(new Runnable() {
+                        public void run() { pageApps.setVisibility(View.GONE); }
+                    });
+                }
+            } else {
+                pageGauges.setTranslationX(0);
+                pageApps.setVisibility(View.GONE);
+            }
+        } else if (target == 2) { // Page 2: Native Apps
+            pageApps.setVisibility(View.VISIBLE);
+            if (animate) {
+                pageApps.setTranslationX(w);
+                pageApps.animate().translationX(0).setDuration(220);
+                if (pageGauges.getVisibility() == View.VISIBLE) {
+                    pageGauges.animate().translationX(-w).setDuration(220).withEndAction(new Runnable() {
+                        public void run() { pageGauges.setVisibility(View.GONE); }
+                    });
+                }
+            } else {
+                pageApps.setTranslationX(0);
+                pageGauges.setVisibility(View.GONE);
+            }
         }
     }
 
-    private LinearLayout buildPage() {
+    // ---------------------------- Page 1: Gauge Toggles & ECU Support ----------------------------
+    private LinearLayout buildGaugesPage() {
         final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
-        LinearLayout p = new LinearLayout(this);
-        p.setOrientation(LinearLayout.VERTICAL);
-        p.setBackgroundColor(0xF7060608);
-        p.setPadding(dp(24), dp(14), dp(24), dp(14));
-        p.setClickable(true);   // swallow taps so the home screen underneath is not pressed
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xF7060608);
+        root.setPadding(dp(20), dp(12), dp(20), dp(12));
+        root.setClickable(true);
 
+        // Header bar
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView back = button("<  HOME", 18, new Runnable() { public void run() { closePage(true); } });
-        back.setPadding(dp(18), dp(8), dp(18), dp(8));
-        TextView title = label(28, 0xFFFFFFFF);
-        title.setText("Apps");
+        head.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView back = button("<  HOME", 16, new Runnable() { public void run() { goToPage(0, true); } });
+        back.setPadding(dp(16), dp(8), dp(16), dp(8));
+
+        TextView title = label(24, 0xFFFFFFFF);
+        title.setText("GAUGE DISPLAY TOGGLES");
         title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
         title.setPadding(dp(16), 0, 0, 0);
+
+        TextView next = button("NATIVE APPS  >", 16, new Runnable() { public void run() { goToPage(2, true); } });
+        next.setPadding(dp(16), dp(8), dp(16), dp(8));
+
         head.addView(back, new LinearLayout.LayoutParams(W, W));
-        head.addView(title);
-        p.addView(head, new LinearLayout.LayoutParams(M, W));
+        head.addView(title, lp(0, W, 1f));
+        head.addView(next, new LinearLayout.LayoutParams(W, W));
+        root.addView(head, new LinearLayout.LayoutParams(M, W));
 
-        String[] names = {"Music", "Equalizer", "YouTube", "Browser", "Phone / Bluetooth", "Maps", "Settings", "All apps"};
-        Runnable[] acts = {
-                new Runnable() { public void run() { onMusic(); } },
-                new Runnable() { public void run() { startActivity(new Intent(MainActivity.this, EqualizerActivity.class)); } },
-                new Runnable() { public void run() { onYouTube(); } },
-                new Runnable() { public void run() { onBrowser(); } },
-                new Runnable() { public void run() { onPhone(); } },
-                new Runnable() { public void run() { onMaps(); } },
-                new Runnable() { public void run() { startActivity(new Intent(Settings.ACTION_SETTINGS)); } },
-                new Runnable() { public void run() { startActivity(new Intent(MainActivity.this, AppDrawerActivity.class)); } }};
-        LinearLayout grid = new LinearLayout(this);
-        grid.setOrientation(LinearLayout.VERTICAL);
-        for (int r = 0; r < 2; r++) {
-            LinearLayout row = new LinearLayout(this);
-            for (int c = 0; c < 4; c++) {
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, M, 1f);
-                lp.setMargins(dp(5), dp(5), dp(5), dp(5));
-                row.addView(button(names[r * 4 + c], 20, acts[r * 4 + c]), lp);
-            }
-            grid.addView(row, new LinearLayout.LayoutParams(M, 0, 1f));
-        }
-        p.addView(grid, new LinearLayout.LayoutParams(M, 0, 1f));
+        // Subtitle hint
+        TextView hint = label(12, 0x8CFFFFFF);
+        hint.setText("Swipe left again for native car apps • Toggle which gauges appear on your home screen");
+        hint.setPadding(dp(4), dp(4), 0, dp(10));
+        root.addView(hint);
 
+        // Scrollable cards list
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+
+        TextView[] bAtf = new TextView[1];
+        TextView[] bFuel = new TextView[1];
+
+        list.addView(gaugeCard("ENGINE RPM GAUGE", "0–8000 RPM dial (PID 010C)", "SUPPORTED", GREEN, "show_rpm", null));
+        list.addView(gaugeCard("COOLANT TEMPERATURE", "Engine block temperature (PID 0105)", "SUPPORTED", GREEN, "show_coolant", null));
+        list.addView(gaugeCard("BATTERY VOLTAGE", "Alternator & battery health (ATRV)", "SUPPORTED", GREEN, "show_battery", null));
+        list.addView(gaugeCard("ENGINE LOAD", "Real-time engine capacity load (PID 0104)", "SUPPORTED", GREEN, "show_load", null));
+        list.addView(gaugeCard("ATF TRANSMISSION TEMP", "Automatic / CVT transmission fluid temp", "REQUIRES OBD2", GREY, "show_atf", bAtf));
+        badgeAtf = bAtf[0];
+        list.addView(gaugeCard("FUEL TANK LEVEL", "Liquid animated tank & remaining percentage", "REQUIRES OBD2", GREY, "show_fuel", bFuel));
+        badgeFuel = bFuel[0];
+        list.addView(gaugeCard("DTC TROUBLE WARNING", "Check engine warning & diagnostic codes (Mode 03)", "SUPPORTED", GREEN, "show_dtc", null));
+        list.addView(gaugeCard("0–100 KM/H LAUNCH TIMER", "Automatic launch acceleration timer", "SUPPORTED", GREEN, "timer_on", null));
+
+        sv.addView(list);
+        root.addView(sv, lp(M, 0, 1f));
+        return root;
+    }
+
+    private View gaugeCard(String title, String subtitle, String statusText, int statusColor,
+                           final String prefKey, TextView[] outBadge) {
+        final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setBackground(shape(0x1AFFFFFF));
+        card.setPadding(dp(16), dp(10), dp(16), dp(10));
+
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(M, W);
+        clp.bottomMargin = dp(8);
+        card.setLayoutParams(clp);
+
+        // Left info
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+
+        TextView tTitle = label(16, 0xFFFFFFFF);
+        tTitle.setText(title);
+        tTitle.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+
+        TextView tSub = label(12, 0x8CFFFFFF);
+        tSub.setText(subtitle);
+
+        TextView tBadge = label(11, statusColor);
+        tBadge.setText(" " + statusText + " ");
+        tBadge.setTypeface(Typeface.DEFAULT_BOLD);
+        tBadge.setBackground(badgeShape((statusColor & 0x00FFFFFF) | 0x26000000));
+        tBadge.setPadding(dp(6), dp(2), dp(6), dp(2));
+
+        if (outBadge != null) outBadge[0] = tBadge;
+
+        LinearLayout badgeRow = new LinearLayout(this);
+        badgeRow.setOrientation(LinearLayout.HORIZONTAL);
+        badgeRow.setPadding(0, dp(4), 0, 0);
+        badgeRow.addView(tBadge);
+
+        col.addView(tTitle);
+        col.addView(tSub);
+        col.addView(badgeRow);
+
+        card.addView(col, lp(0, W, 1f));
+
+        // Right switch
         Switch sw = new Switch(this);
-        sw.setText("0-100 km/h timer on the home screen");
-        sw.setTextSize(20);
-        sw.setTextColor(0xFFFFFFFF);
-        sw.setChecked(prefs.getBoolean("timer_on", true));
+        sw.setChecked(prefs.getBoolean(prefKey, true));
         sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(CompoundButton b, boolean on) {
-                prefs.edit().putBoolean("timer_on", on).apply();
-                tmBox.setVisibility(on ? View.VISIBLE : View.GONE);
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.edit().putBoolean(prefKey, isChecked).apply();
+                applyGaugeToggles();
             }
         });
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(W, W);
-        slp.topMargin = dp(8);
-        p.addView(sw, slp);
-        return p;
+
+        card.addView(sw, new LinearLayout.LayoutParams(W, W));
+        return card;
+    }
+
+    // ---------------------------- Page 2: Native Car Apps ----------------------------
+    private LinearLayout buildAppsPage() {
+        final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(0xF7060608);
+        root.setPadding(dp(20), dp(12), dp(20), dp(12));
+        root.setClickable(true);
+
+        // Header bar
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+
+        TextView back = button("<  GAUGES", 16, new Runnable() { public void run() { goToPage(1, true); } });
+        back.setPadding(dp(16), dp(8), dp(16), dp(8));
+
+        TextView title = label(24, 0xFFFFFFFF);
+        title.setText("NATIVE CAR APPS");
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC));
+        title.setPadding(dp(16), 0, 0, 0);
+
+        TextView home = button("HOME  X", 16, new Runnable() { public void run() { goToPage(0, true); } });
+        home.setPadding(dp(16), dp(8), dp(16), dp(8));
+
+        head.addView(back, new LinearLayout.LayoutParams(W, W));
+        head.addView(title, lp(0, W, 1f));
+        head.addView(home, new LinearLayout.LayoutParams(W, W));
+        root.addView(head, new LinearLayout.LayoutParams(M, W));
+
+        TextView hint = label(12, 0x8CFFFFFF);
+        hint.setText("Direct links to your car head-unit's native applications and features");
+        hint.setPadding(dp(4), dp(4), 0, dp(14));
+        root.addView(hint);
+
+        // Native app items
+        String[] labels = {
+                "BLUETOOTH / PHONE", "CAR SETTINGS",
+                "CAR RADIO (FM/AM)", "MUSIC PLAYER",
+                "VIDEO PLAYER", "NAVIGATION / MAPS",
+                "EQUALIZER / DSP", "ALL INSTALLED APPS"
+        };
+        Runnable[] actions = {
+                new Runnable() { public void run() { if (!launchFirst(PKG_BT)) startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS)); } },
+                new Runnable() { public void run() { if (!launchFirst(PKG_SETTINGS)) startActivity(new Intent(Settings.ACTION_SETTINGS)); } },
+                new Runnable() { public void run() { if (!launchFirst(PKG_RADIO)) toast("Car radio app not found"); } },
+                new Runnable() { public void run() {
+                    if (!launchFirst(PKG_MUSIC)) {
+                        try { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_MUSIC)); }
+                        catch (Exception e) { toast("No music app found"); }
+                    }
+                } },
+                new Runnable() { public void run() { if (!launchFirst(PKG_VIDEO)) toast("Video player not found"); } },
+                new Runnable() { public void run() { if (!launchFirst(PKG_MAPS)) toast("No maps app installed"); } },
+                new Runnable() { public void run() {
+                    if (!launchFirst(PKG_EQ)) startActivity(new Intent(MainActivity.this, EqualizerActivity.class));
+                } },
+                new Runnable() { public void run() { startActivity(new Intent(MainActivity.this, AppDrawerActivity.class)); } }
+        };
+
+        LinearLayout grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+
+        for (int r = 0; r < 2; r++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int c = 0; c < 4; c++) {
+                int idx = r * 4 + c;
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, M, 1f);
+                lp.setMargins(dp(6), dp(6), dp(6), dp(6));
+                row.addView(button(labels[idx], 18, actions[idx]), lp);
+            }
+            grid.addView(row, lp(M, 0, 1f));
+        }
+
+        root.addView(grid, lp(M, 0, 1f));
+        return root;
     }
 
     // ---------------------------- UI helpers ----------------------------
@@ -413,6 +727,13 @@ public class MainActivity extends Activity implements LocationListener {
         GradientDrawable g = new GradientDrawable();
         g.setColor(color);
         g.setCornerRadius(dp(12));
+        return g;
+    }
+
+    private GradientDrawable badgeShape(int color) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(color);
+        g.setCornerRadius(dp(4));
         return g;
     }
 
@@ -456,13 +777,14 @@ public class MainActivity extends Activity implements LocationListener {
         return p;
     }
 
+    // ---------------------------- Build UI ----------------------------
     private void buildUi() {
         final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(14), dp(8), dp(14), dp(8));
 
-        // top: clock + timer | speedometer | gauges
+        // Top section: clock + timer | speedometer | gauges
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         root.addView(top, lp(M, 0, 1f));
@@ -494,7 +816,6 @@ public class MainActivity extends Activity implements LocationListener {
         tcol.addView(tmVal);
         tcol.addView(tmBest);
         tm.addView(tcol);
-        tm.setVisibility(prefs.getBoolean("timer_on", true) ? View.VISIBLE : View.GONE);
         tmBox = tm;
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(W, W);
         tlp.topMargin = dp(14);
@@ -504,32 +825,35 @@ public class MainActivity extends Activity implements LocationListener {
         speedo = new SpeedometerView(this);
         top.addView(speedo, lp(0, M, 1.4f));
 
-        // gauges: name, unit, min, max, cautionHigh, dangerHigh, cautionLow, dangerLow, decimals
+        // Gauges: RPM, Temp, Batt, Load, ATF, Fuel, DTC
         obdPanel = new LinearLayout(this);
         obdPanel.setOrientation(LinearLayout.VERTICAL);
         obdPanel.setGravity(Gravity.CENTER_VERTICAL);
-        obdPanel.setVisibility(View.INVISIBLE);
         gRpm  = new MiniGaugeView(this, "RPM", "rpm", 0, 8000, 5000, 6000, Float.NaN, Float.NaN, 0);
         gTemp = new MiniGaugeView(this, "COOLANT", "\u00B0C", 40, 130, 100, 108, Float.NaN, Float.NaN, 0);
         gBatt = new MiniGaugeView(this, "BATTERY", "V", 10, 16, Float.NaN, 15.2f, 12.0f, 11.8f, 1);
         gLoad = new MiniGaugeView(this, "LOAD", "%", 0, 100, 85, 95, Float.NaN, Float.NaN, 0);
         gAtf  = new MiniGaugeView(this, "ATF TEMP", "\u00B0C", 20, 150, 110, 130, Float.NaN, Float.NaN, 0);
-        obdPanel.addView(row(gRpm, gTemp), lp(M, 0, 1f));
-        obdPanel.addView(row(gBatt, gLoad), lp(M, 0, 1f));
+
+        row1 = row(gRpm, gTemp);
+        row2 = row(gBatt, gLoad);
 
         // Third row: ATF temp gauge + fuel gauge + DTC warning
         fuelGauge  = new FuelGaugeView(this);
         dtcWarning = new DtcWarningView(this);
-        LinearLayout row3 = new LinearLayout(this);
+        row3 = new LinearLayout(this);
         row3.setOrientation(LinearLayout.HORIZONTAL);
         row3.addView(gAtf,        lp(0, M, 1f));
         row3.addView(fuelGauge,   lp(0, M, 1f));
         row3.addView(dtcWarning,  lp(0, M, 1f));
+
+        obdPanel.addView(row1, lp(M, 0, 1f));
+        obdPanel.addView(row2, lp(M, 0, 1f));
         obdPanel.addView(row3, lp(M, 0, 1f));
 
         top.addView(obdPanel, lp(0, M, 1.3f));
 
-        // bluetooth music bar
+        // Bluetooth music bar
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
@@ -553,7 +877,7 @@ public class MainActivity extends Activity implements LocationListener {
         wrap.addView(aurora);
         wrap.addView(root);
 
-        // faint hint on the right edge: swipe left (or tap) for apps
+        // Faint swipe hint on the right edge: tap or swipe left for gauge settings
         FrameLayout edge = new FrameLayout(this);
         View pill = new View(this);
         GradientDrawable pg = new GradientDrawable();
@@ -563,12 +887,18 @@ public class MainActivity extends Activity implements LocationListener {
         FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(dp(4), dp(80), Gravity.END | Gravity.CENTER_VERTICAL);
         plp.rightMargin = dp(4);
         edge.addView(pill, plp);
-        edge.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { openPage(); } });
+        edge.setOnClickListener(new View.OnClickListener() { public void onClick(View v) { goToPage(1, true); } });
         wrap.addView(edge, new FrameLayout.LayoutParams(dp(28), dp(160), Gravity.END | Gravity.CENTER_VERTICAL));
 
-        page = buildPage();
-        page.setVisibility(View.GONE);
-        wrap.addView(page, new FrameLayout.LayoutParams(M, M));
+        // Page 1: Gauge Toggles & ECU Support
+        pageGauges = buildGaugesPage();
+        pageGauges.setVisibility(View.GONE);
+        wrap.addView(pageGauges, new FrameLayout.LayoutParams(M, M));
+
+        // Page 2: Native Car Apps
+        pageApps = buildAppsPage();
+        pageApps.setVisibility(View.GONE);
+        wrap.addView(pageApps, new FrameLayout.LayoutParams(M, M));
 
         setContentView(wrap);
     }
