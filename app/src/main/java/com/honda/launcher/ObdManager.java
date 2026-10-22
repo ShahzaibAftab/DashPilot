@@ -138,7 +138,10 @@ public class ObdManager {
                     if (ad == null) {
                         statusMessage = "Bluetooth hardware not detected";
                     } else if (!ad.isEnabled()) {
-                        statusMessage = "Bluetooth is turned off in Settings";
+                        statusMessage = "Enabling Bluetooth...";
+                        try { ad.enable(); } catch (Throwable ignore) { }
+                        Thread.sleep(2000);
+                        continue;
                     } else if (manualDeviceAddress != null && !manualDeviceAddress.isEmpty()) {
                         statusMessage = "Saved device (" + manualDeviceAddress + ") not in range";
                     } else {
@@ -248,11 +251,27 @@ public class ObdManager {
 
                     // ---- Slow-poll PIDs (every 5th cycle ≈ 2.5 sec) ----
                     if (loopCount % 5 == 0) {
-                        // Fuel level
-                        if (hasFuel) {
-                            r = send(in, out, "012F", 1500);
-                            v = hex(r, "412F", 1);
-                            if (v >= 0) fuelLevel = v * 100f / 255f;
+                        // Fuel level: Always attempt PID 012F and Honda Mode 22 PIDs
+                        r = send(in, out, "012F", 1500);
+                        v = hex(r, "412F", 1);
+                        if (v >= 0) {
+                            fuelLevel = v * 100f / 255f;
+                            hasFuelSupported = true;
+                        } else {
+                            // Try Honda Enhanced Mode 22 PID for Fuel Tank Level
+                            r = send(in, out, "221123", 1500);
+                            v = hex(r, "621123", 1);
+                            if (v >= 0) {
+                                fuelLevel = v * 100f / 255f;
+                                hasFuelSupported = true;
+                            } else {
+                                r = send(in, out, "22012F", 1500);
+                                v = hex(r, "62012F", 1);
+                                if (v >= 0) {
+                                    fuelLevel = v * 100f / 255f;
+                                    hasFuelSupported = true;
+                                }
+                            }
                         }
 
                         // ATF / transmission oil temp

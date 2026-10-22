@@ -28,6 +28,7 @@ public class SpeedometerView extends View {
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint txt = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF rect = new RectF(32, 32, 268, 268);   // r = 118
+    private final RectF heartbeatRect = new RectF(22, 22, 278, 278); // r = 128
     private final Path needle = new Path();
     private Bitmap face;
     private float u, ox, oy, shown, target;
@@ -36,13 +37,47 @@ public class SpeedometerView extends View {
     private long lastT;
     private boolean isSweeping = false;
     private ValueAnimator sweepAnim;
+    private long lastFrameTime = 0;
+
+    // Engine Heartbeat pulse line
+    private boolean heartbeatEnabled = true;
+    private float engineRpm = 750f;
+    private float heartbeatPhase = 0f;
+    private long lastHeartbeatTime = 0;
 
     private final Runnable step = new Runnable() {
         @Override public void run() {
             if (isSweeping) return;
+            long now = SystemClock.uptimeMillis();
+            if (lastFrameTime == 0) lastFrameTime = now;
+            float dt = (now - lastFrameTime) / 1000f;
+            lastFrameTime = now;
+
+            // Clamp dt to reasonable bounds to avoid jumps when resuming from background
+            if (dt > 0.08f) dt = 0.033f;
+            else if (dt <= 0.0001f) dt = 0.016f;
+
             float d = target - shown;
-            if (Math.abs(d) < 0.05f) { shown = target; animating = false; }
-            else { shown += d * 0.25f; postOnAnimation(this); }
+            if (Math.abs(d) < 0.08f) {
+                shown = target;
+                animating = false;
+                lastFrameTime = 0;
+            } else {
+                // Adaptive time constant: faster on large speed shifts (>6 km/h) for punchy,
+                // immediate response; silky on fine adjustments for butter-smooth gliding.
+                float tau = (Math.abs(d) > 6f) ? 0.070f : 0.090f;
+                float alpha = 1.0f - (float) Math.exp(-dt / tau);
+                float stepAmount = d * alpha;
+
+                // Snappy minimum velocity prevents needle from creeping or dragging at the tail
+                float minStep = 40f * dt;
+                if (Math.abs(stepAmount) < minStep) {
+                    stepAmount = Math.copySign(Math.min(minStep, Math.abs(d)), d);
+                }
+
+                shown += stepAmount;
+                postOnAnimation(this);
+            }
             invalidate();
         }
     };
@@ -91,7 +126,8 @@ public class SpeedometerView extends View {
             @Override public void onAnimationEnd(Animator animation) {
                 isSweeping = false;
                 shown = target;
-                if (!animating && Math.abs(target - shown) > 0.05f) {
+                lastFrameTime = 0;
+                if (!animating && Math.abs(target - shown) > 0.08f) {
                     animating = true;
                     postOnAnimation(step);
                 }
@@ -114,6 +150,21 @@ public class SpeedometerView extends View {
             invalidate();
         }
     }
+
+    public void setHeartbeatEnabled(boolean enabled) {
+        if (this.heartbeatEnabled != enabled) {
+            this.heartbeatEnabled = enabled;
+            invalidate();
+        }
+    }
+
+    public boolean isHeartbeatEnabled() { return heartbeatEnabled; }
+
+    public void setEngineRpm(float rpm) {
+        this.engineRpm = rpm;
+    }
+
+    public float getEngineRpm() { return engineRpm; }
 
     public void setTheme(int theme) {
         if (this.theme != theme) {
@@ -164,13 +215,24 @@ public class SpeedometerView extends View {
 
     public void setSpeed(float s) {
         long now = SystemClock.uptimeMillis();
-        if (now - lastT >= 500) {
-            if (lastT != 0) accel = accel * 0.5f + 0.5f * ((s - lastS) / ((now - lastT) / 1000f));
-            lastS = s; lastT = now;
+        if (now - lastT >= 200) {
+            if (lastT != 0) {
+                float dt = (now - lastT) / 1000f;
+                if (dt > 0.05f) {
+                    float instantAccel = (s - lastS) / dt;
+                    accel = accel * 0.4f + instantAccel * 0.6f;
+                }
+            }
+            lastS = s;
+            lastT = now;
         }
-        target = s;
+        target = Math.max(0f, Math.min(MAX, s));
         if (isSweeping) return;
-        if (!animating) { animating = true; postOnAnimation(step); }
+        if (!animating) {
+            animating = true;
+            lastFrameTime = 0;
+            postOnAnimation(step);
+        }
     }
 
     @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
@@ -285,6 +347,84 @@ public class SpeedometerView extends View {
             c.drawArc(rect, 135, 270 * f, false, p);
         }
 
+        // ---- Engine Heartbeat: thin glowing pulse line ringing the speedometer ----
+        if (heartbeatEnabled) {
+            long now = SystemClock.uptimeMillis();
+            if (lastHeartbeatTime == 0) lastHeartbeatTime = now;
+            float dt = (now - lastHeartbeatTime) / 1000f;
+            lastHeartbeatTime = now;
+            if (dt > 0.08f) dt = 0.033f;
+            else if (dt <= 0.0001f) dt = 0.016f;
+
+            // Heartbeat frequency in Hz:
+            // Idle (750 RPM): ~1.0 Hz (60 BPM, calm resting pulse)
+            // 3000 RPM: ~2.3 Hz
+            // 6000 RPM: ~4.1 Hz (racing cardiac pulse)
+            float effectiveRpm = (engineRpm > 0 && !Float.isNaN(engineRpm)) ? engineRpm : 750f;
+            float freq = 0.9f + (Math.max(0f, effectiveRpm - 700f) / 5300f) * 3.3f;
+            if (warn) {
+                freq *= 1.4f; // Rapid urgent beat when in danger
+            }
+
+            heartbeatPhase += (float) (2.0 * Math.PI * freq * dt);
+            if (heartbeatPhase > 10000f) heartbeatPhase %= (float) (2.0 * Math.PI);
+
+            // Lub-dub cardiac waveform:
+            float s1 = (float) Math.max(0, Math.sin(heartbeatPhase));
+            float p1 = s1 * s1 * s1 * s1 * s1 * s1; // sharp systolic contraction
+            float s2 = (float) Math.max(0, Math.sin(heartbeatPhase - 0.7f));
+            float p2 = 0.42f * s2 * s2 * s2 * s2;  // diastolic echo
+            float pulse = Math.min(1.0f, p1 + p2);
+
+            if (warn) {
+                // Ragged warning rhythm: erratic arrhythmia when a gauge enters danger
+                float ragged = (float) (0.28f * Math.sin(heartbeatPhase * 3.3) + 0.22f * Math.cos(heartbeatPhase * 5.7));
+                pulse = Math.max(0f, Math.min(1.0f, pulse + ragged));
+            }
+
+            int beatCol;
+            if (warn) {
+                beatCol = 0xFFFF1744; // Warning Red (ragged & red!)
+            } else if (ecoMode && !isSweeping) {
+                beatCol = 0xFF00E676; // Eco Green
+            } else if (theme == THEME_SAPPHIRE) {
+                beatCol = 0xFF00E5FF; // Electric Cyan
+            } else if (theme == THEME_ONYX) {
+                beatCol = 0xFFFFB300; // Warm Amber Gold
+            } else {
+                beatCol = 0xFFFF1F2D; // Type R Red
+            }
+
+            // 1. Thin resting baseline guide ring (subtle, 1.2px)
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeCap(Paint.Cap.ROUND);
+            p.setStrokeWidth(1.2f);
+            p.setColor((beatCol & 0x00FFFFFF) | 0x22000000);
+            c.drawArc(heartbeatRect, 135, 270, false, p);
+
+            // 2. Glowing pulse halo that expands with the engine heartbeat
+            if (pulse > 0.02f) {
+                // Ambient glow halo
+                float glowWidth = 3f + 8f * pulse;
+                int glowAlpha = (int) (18 + 70 * pulse);
+                p.setStrokeWidth(glowWidth);
+                p.setColor((beatCol & 0x00FFFFFF) | (glowAlpha << 24));
+                c.drawArc(heartbeatRect, 135, 270, false, p);
+
+                // Thin crisp glowing pulse line
+                float coreWidth = 1.6f + 1.6f * pulse;
+                int coreAlpha = (int) (90 + 165 * pulse);
+                p.setStrokeWidth(coreWidth);
+                p.setColor((beatCol & 0x00FFFFFF) | (coreAlpha << 24));
+                c.drawArc(heartbeatRect, 135, 270, false, p);
+            }
+
+            // Keep the heartbeat animating smoothly at ~30 fps
+            if (!animating && !isSweeping) {
+                postInvalidateDelayed(33);
+            }
+        }
+
         c.save();
         c.rotate(135 + 270 * f, 150, 150);
         // Needle luminous glow
@@ -317,9 +457,13 @@ public class SpeedometerView extends View {
             txt.setColor(0xFFFFFFFF);
         }
         txt.setTextSize(62);
-        c.drawText(String.valueOf((int) shown), 150, 262, txt);
+        c.drawText(String.valueOf((int) Math.round(shown)), 150, 262, txt);
         txt.setColor((theme == THEME_SAPPHIRE) ? 0xFF80D8FF : (theme == THEME_ONYX) ? 0xFFFFD54F : 0xFF9AA5B1);
         txt.setTextSize(14);
         c.drawText("km/h", 150, 285, txt);
     }
+
+    public float getSpeed() { return shown; }
+    public float getTargetSpeed() { return target; }
+    public float getAccel() { return accel; }
 }
