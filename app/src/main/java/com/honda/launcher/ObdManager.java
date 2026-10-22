@@ -21,6 +21,14 @@ import java.util.UUID;
 public class ObdManager {
     private static final UUID SPP = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 
+    public static final int STATE_DISCONNECTED = 0;
+    public static final int STATE_CONNECTING = 1;
+    public static final int STATE_CONNECTED = 2;
+
+    public volatile int state = STATE_DISCONNECTED;
+    public volatile String connectedDeviceName = "";
+    public volatile String manualDeviceAddress;
+
     public volatile boolean connected;
     public volatile int rpm = -1, coolant = -999, speed = -1, load = -1;
     public volatile float volts = -1f;
@@ -38,6 +46,16 @@ public class ObdManager {
 
     /** How many main-loop iterations between DTC scans (DTCs change slowly). */
     private static final int DTC_INTERVAL = 20;
+
+    public synchronized void setManualDevice(String mac) {
+        this.manualDeviceAddress = mac;
+        reconnectNow();
+    }
+
+    public synchronized void reconnectNow() {
+        stop();
+        start();
+    }
 
     public synchronized void start() {
         final int id = ++gen;
@@ -57,8 +75,24 @@ public class ObdManager {
         while (alive(id)) {
             try {
                 BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
-                BluetoothDevice dev = (ad != null && ad.isEnabled()) ? find(ad) : null;
-                if (dev == null) { Thread.sleep(8000); continue; }
+                BluetoothDevice dev = null;
+                if (ad != null && ad.isEnabled()) {
+                    if (manualDeviceAddress != null && !manualDeviceAddress.isEmpty()) {
+                        try { dev = ad.getRemoteDevice(manualDeviceAddress); }
+                        catch (Exception ignore) { }
+                    }
+                    if (dev == null) dev = find(ad);
+                }
+
+                if (dev == null) {
+                    state = STATE_DISCONNECTED;
+                    Thread.sleep(4000);
+                    continue;
+                }
+
+                state = STATE_CONNECTING;
+                connectedDeviceName = (dev.getName() != null && !dev.getName().isEmpty())
+                        ? dev.getName() : dev.getAddress();
 
                 ad.cancelDiscovery();
                 BluetoothSocket s = dev.createRfcommSocketToServiceRecord(SPP);
@@ -82,6 +116,7 @@ public class ObdManager {
                 send(in, out, "ATH0", 1500);
                 send(in, out, "ATSP0", 1500);
                 connected = true;
+                state = STATE_CONNECTED;
 
                 // ---- Detect supported PIDs once on connect ----
                 // PID 0x00 returns bitmask of PIDs 01-20 support
@@ -174,6 +209,7 @@ public class ObdManager {
                 // connection lost or failed: fall through and retry
             } finally {
                 connected = false;
+                state = STATE_DISCONNECTED;
                 pidsDetected = false;
                 hasFuelSupported = false;
                 hasAtfSupported = false;

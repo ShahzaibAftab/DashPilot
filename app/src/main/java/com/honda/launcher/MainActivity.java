@@ -2,9 +2,13 @@ package com.honda.launcher;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
@@ -104,6 +108,10 @@ public class MainActivity extends Activity implements LocationListener {
     // Dynamic badges for unsupported/supported detection
     private TextView badgeAtf, badgeFuel;
 
+    // OBD and Bluetooth connection card views
+    private TextView obdStatusText, phoneStatusText;
+    private String btTrack = null, btArtist = null;
+
     private volatile float gpsSpeed;
     private volatile long lastGps;
     private float curSpeed, downX, downY;
@@ -120,10 +128,17 @@ public class MainActivity extends Activity implements LocationListener {
         public void onReceive(Context context, Intent intent) {
             String track = intent.getStringExtra("track");
             if (track == null) track = intent.getStringExtra("title");
+            if (track == null) track = intent.getStringExtra("song");
+            if (track == null) track = intent.getStringExtra("name");
+            if (track == null) track = intent.getStringExtra("song_name");
+
             String artist = intent.getStringExtra("artist");
+            if (artist == null) artist = intent.getStringExtra("singer");
+
             if (track != null && !track.trim().isEmpty()) {
-                String label = track.trim();
-                if (artist != null && !artist.trim().isEmpty()) label = label + " - " + artist.trim();
+                btTrack = track.trim();
+                btArtist = (artist != null && !artist.trim().isEmpty()) ? artist.trim() : "";
+                String label = btArtist.isEmpty() ? btTrack : btTrack + " - " + btArtist;
                 nowPlaying.setText(label);
             }
         }
@@ -132,6 +147,13 @@ public class MainActivity extends Activity implements LocationListener {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("launcher", MODE_PRIVATE);
+
+        // Load manually selected OBD-II device if saved
+        String savedMac = prefs.getString("obd_mac", null);
+        if (savedMac != null && !savedMac.isEmpty()) {
+            obd.manualDeviceAddress = savedMac;
+        }
+
         buildUi();
         applyGaugeToggles();
         EqManager.get(this);   // re-applies saved equalizer levels
@@ -156,7 +178,11 @@ public class MainActivity extends Activity implements LocationListener {
         f.addAction("com.samsung.sec.android.MusicPlayer.metachanged");
         f.addAction("android.bluetooth.a2dp.profile.action.PLAYING_STATE_CHANGED");
         f.addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
-        registerReceiver(btMusicReceiver, f);
+        f.addAction("com.gocsdk.action.BT_A2DP_INFO");
+        f.addAction("com.syu.bt.action.A2DP_METADATA");
+        f.addAction("com.car.bt.a2dp.metachanged");
+        f.addAction("com.my.bt.music.info");
+        try { registerReceiver(btMusicReceiver, f); } catch (Exception ignore) { }
     }
 
     @Override protected void onPause() {
@@ -218,7 +244,7 @@ public class MainActivity extends Activity implements LocationListener {
             timerStep(obd.connected && obd.speed >= 0 ? obd.speed : s);
             if (ticks % 2 == 0) updateObd();
             if (ticks % 4 == 0) updateClock();
-            if (ticks % 8 == 0) updateNowPlaying();
+            if (ticks % 6 == 0) updateNowPlaying();
             ticks++;
             h.postDelayed(this, 250);
         }
@@ -231,6 +257,8 @@ public class MainActivity extends Activity implements LocationListener {
     }
 
     private void updateObd() {
+        updateObdStatusCard();
+
         if (!obd.connected) {
             // Keep gauges visible in sleek standby mode instead of an empty black void!
             gRpm.setValue(Float.NaN);
@@ -270,6 +298,75 @@ public class MainActivity extends Activity implements LocationListener {
 
         // Update PID support badges if on gauge page
         updateGaugeBadges();
+    }
+
+    private void updateObdStatusCard() {
+        if (obdStatusText != null) {
+            if (obd.state == ObdManager.STATE_CONNECTED) {
+                String dev = (obd.connectedDeviceName != null && !obd.connectedDeviceName.isEmpty())
+                        ? obd.connectedDeviceName : "ELM327";
+                obdStatusText.setText("● OBD-II: CONNECTED (" + dev + ")");
+                obdStatusText.setTextColor(GREEN);
+            } else if (obd.state == ObdManager.STATE_CONNECTING) {
+                String dev = (obd.connectedDeviceName != null && !obd.connectedDeviceName.isEmpty())
+                        ? " to " + obd.connectedDeviceName : "";
+                obdStatusText.setText("◐ OBD-II: CONNECTING" + dev + "...");
+                obdStatusText.setTextColor(AMBER);
+            } else {
+                obdStatusText.setText("○ OBD-II: DISCONNECTED");
+                obdStatusText.setTextColor(0xFFCFD8DC);
+            }
+        }
+
+        if (phoneStatusText != null) {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            boolean musicActive = (am != null && am.isMusicActive());
+            if (musicActive || (btTrack != null && !btTrack.isEmpty())) {
+                phoneStatusText.setText("● Mobile Phone: AUDIO CONNECTED (A2DP)");
+                phoneStatusText.setTextColor(GREEN);
+            } else {
+                phoneStatusText.setText("○ Mobile Phone: READY / STANDBY");
+                phoneStatusText.setTextColor(0xFFCFD8DC);
+            }
+        }
+    }
+
+    private void showDevicePicker() {
+        BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+        if (ad == null || !ad.isEnabled()) {
+            toast("Bluetooth is off. Please turn on Bluetooth in Settings.");
+            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+            return;
+        }
+
+        final List<BluetoothDevice> bonded = new ArrayList<>(ad.getBondedDevices());
+        if (bonded.isEmpty()) {
+            toast("No paired Bluetooth devices found. Pair OBD-II in Android Settings first.");
+            startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+            return;
+        }
+
+        String[] names = new String[bonded.size()];
+        for (int i = 0; i < bonded.size(); i++) {
+            BluetoothDevice d = bonded.get(i);
+            String n = d.getName();
+            names[i] = (n != null ? n : "Unknown Device") + " (" + d.getAddress() + ")";
+        }
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK);
+        b.setTitle("Select your OBD-II Adapter");
+        b.setItems(names, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                BluetoothDevice chosen = bonded.get(which);
+                prefs.edit().putString("obd_mac", chosen.getAddress()).apply();
+                obd.setManualDevice(chosen.getAddress());
+                String label = chosen.getName() != null ? chosen.getName() : chosen.getAddress();
+                toast("Connecting to " + label + "...");
+                updateObdStatusCard();
+            }
+        });
+        b.setNegativeButton("Cancel", null);
+        b.show();
     }
 
     private void updateGaugeBadges() {
@@ -363,6 +460,10 @@ public class MainActivity extends Activity implements LocationListener {
 
     // ---------------------------- now playing ----------------------------
     private void updateNowPlaying() {
+        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        boolean isMusicActive = (am != null && am.isMusicActive());
+
+        // 1. Try local MediaSession (Spotify, YouTube, media player running on unit)
         try {
             MediaSessionManager m = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
             List<MediaController> l = m.getActiveSessions(new ComponentName(this, NowPlayingService.class));
@@ -373,19 +474,40 @@ public class MainActivity extends Activity implements LocationListener {
                 if (st != null && st.getState() == PlaybackState.STATE_PLAYING) { controller = c; break; }
             }
             if (controller == null && !l.isEmpty()) controller = l.get(0);
-            if (controller == null) return; // Keep any existing Bluetooth track text intact
-            MediaMetadata md = controller.getMetadata();
-            String t = null;
-            if (md != null) {
-                t = md.getString(MediaMetadata.METADATA_KEY_TITLE);
-                String a = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
-                if (a != null) t = (t == null) ? a : t + " - " + a;
+            if (controller != null) {
+                MediaMetadata md = controller.getMetadata();
+                if (md != null) {
+                    String t = md.getString(MediaMetadata.METADATA_KEY_TITLE);
+                    String a = md.getString(MediaMetadata.METADATA_KEY_ARTIST);
+                    if (t != null && !t.trim().isEmpty()) {
+                        nowPlaying.setText(a != null && !a.trim().isEmpty() ? t + " - " + a : t);
+                        return;
+                    }
+                }
             }
-            if (t != null) nowPlaying.setText(t);
         } catch (SecurityException e) {
             needsAccess = true;
             controller = null;
+        }
+
+        // 2. If Bluetooth track info was received from phone
+        if (btTrack != null && !btTrack.isEmpty()) {
+            String display = (btArtist != null && !btArtist.isEmpty()) ? btTrack + " - " + btArtist : btTrack;
+            nowPlaying.setText(display);
+            return;
+        }
+
+        // 3. Audio actively playing through car speakers (Chrome, Bluetooth stream, etc.)
+        if (isMusicActive) {
+            nowPlaying.setText("Playing Audio (Bluetooth / Media)");
+            return;
+        }
+
+        // 4. Truly idle
+        if (needsAccess) {
             nowPlaying.setText("Tap to allow notification access");
+        } else {
+            nowPlaying.setText("Nothing playing");
         }
     }
 
@@ -474,6 +596,7 @@ public class MainActivity extends Activity implements LocationListener {
         } else if (target == 1) { // Page 1: Gauges Settings
             pageGauges.setVisibility(View.VISIBLE);
             updateGaugeBadges();
+            updateObdStatusCard();
             if (animate) {
                 float startX = (prev == 0) ? w : -w;
                 pageGauges.setTranslationX(startX);
@@ -547,6 +670,9 @@ public class MainActivity extends Activity implements LocationListener {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
 
+        // Top: Dedicated OBD-II & Phone Bluetooth Management Card
+        list.addView(buildBluetoothHubCard());
+
         TextView[] bAtf = new TextView[1];
         TextView[] bFuel = new TextView[1];
 
@@ -564,6 +690,82 @@ public class MainActivity extends Activity implements LocationListener {
         sv.addView(list);
         root.addView(sv, lp(M, 0, 1f));
         return root;
+    }
+
+    private View buildBluetoothHubCard() {
+        final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(shape(0x22FFFFFF));
+        card.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(M, W);
+        clp.bottomMargin = dp(14);
+        card.setLayoutParams(clp);
+
+        // OBD2 Section Header
+        obdStatusText = label(16, 0xFFCFD8DC);
+        obdStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        card.addView(obdStatusText);
+
+        // OBD Action Buttons row
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setPadding(0, dp(6), 0, dp(10));
+
+        TextView btnConnect = button("CONNECT NOW", 14, new Runnable() {
+            public void run() {
+                obd.reconnectNow();
+                toast("Searching & connecting to OBD-II...");
+                updateObdStatusCard();
+            }
+        });
+        btnConnect.setPadding(dp(14), dp(8), dp(14), dp(8));
+
+        TextView btnChoose = button("CHOOSE OBD DEVICE", 14, new Runnable() {
+            public void run() { showDevicePicker(); }
+        });
+        btnChoose.setPadding(dp(14), dp(8), dp(14), dp(8));
+
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, W, 1f);
+        blp.rightMargin = dp(8);
+        btnRow.addView(btnConnect, blp);
+        btnRow.addView(btnChoose, lp(0, W, 1f));
+        card.addView(btnRow);
+
+        // Divider
+        View div = new View(this);
+        div.setBackgroundColor(0x2AFFFFFF);
+        card.addView(div, new LinearLayout.LayoutParams(M, dp(1)));
+
+        // Phone Audio Section
+        phoneStatusText = label(14, 0xFFCFD8DC);
+        phoneStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        phoneStatusText.setPadding(0, dp(10), 0, dp(4));
+        card.addView(phoneStatusText);
+
+        LinearLayout phoneRow = new LinearLayout(this);
+        phoneRow.setOrientation(LinearLayout.HORIZONTAL);
+        phoneRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView note = label(12, 0x8CFFFFFF);
+        note.setText("Dual Bluetooth: Mobile connects for Music/Calls, OBD-II connects for Telemetry at the same time.");
+
+        TextView btnOpenBt = button("OPEN PHONE BT", 13, new Runnable() {
+            public void run() {
+                if (!launchFirst(PKG_BT)) startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
+            }
+        });
+        btnOpenBt.setPadding(dp(12), dp(6), dp(12), dp(6));
+
+        phoneRow.addView(note, lp(0, W, 1f));
+        LinearLayout.LayoutParams oblp = new LinearLayout.LayoutParams(W, W);
+        oblp.leftMargin = dp(8);
+        phoneRow.addView(btnOpenBt, oblp);
+        card.addView(phoneRow);
+
+        updateObdStatusCard();
+        return card;
     }
 
     private View gaugeCard(String title, String subtitle, final String prefKey, TextView[] outBadge) {
