@@ -112,10 +112,11 @@ public class MainActivity extends Activity implements LocationListener {
     private TextView badgeAtf, badgeFuel;
 
     // In-launcher Bluetooth and OBD status card views
-    private TextView obdStatusText, phoneStatusText, devHeaderBtn;
+    private TextView obdStatusText, phoneStatusText, devHeaderBtn, btnPhoneAction;
     private LinearLayout pairedDevicesContainer;
     private boolean devicesListExpanded = false;
     private boolean wasObdConnected = false;
+    private BluetoothDevice lastConnectedPhone = null;
     private String btTrack = null, btArtist = null;
 
     private volatile float gpsSpeed;
@@ -128,10 +129,32 @@ public class MainActivity extends Activity implements LocationListener {
     private long tStart, lastT;
     private float lastV, tBest = -1f, tRes;
 
-    // Bluetooth music receiver for AVRCP metadata from phone
+    // Bluetooth music receiver for AVRCP metadata from phone & device connection events
     private final BroadcastReceiver btMusicReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            String act = intent.getAction();
+            if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(act) ||
+                "android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED".equals(act) ||
+                "android.bluetooth.a2dp-sink.profile.action.CONNECTION_STATE_CHANGED".equals(act) ||
+                "com.gocsdk.action.DEVICE_CONNECTED".equals(act)) {
+                try {
+                    BluetoothDevice dev = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (dev != null && !isObdCandidate(dev.getName())) {
+                        lastConnectedPhone = dev;
+                        prefs.edit().putString("phone_mac", dev.getAddress()).apply();
+                    }
+                } catch (Throwable ignore) { }
+            } else if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(act) ||
+                       "com.gocsdk.action.DEVICE_DISCONNECTED".equals(act)) {
+                try {
+                    BluetoothDevice dev = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (dev != null && lastConnectedPhone != null && dev.getAddress().equalsIgnoreCase(lastConnectedPhone.getAddress())) {
+                        lastConnectedPhone = null;
+                    }
+                } catch (Throwable ignore) { }
+            }
+
             String track = intent.getStringExtra("track");
             if (track == null) track = intent.getStringExtra("title");
             if (track == null) track = intent.getStringExtra("song");
@@ -176,6 +199,8 @@ public class MainActivity extends Activity implements LocationListener {
         h.post(tick);
 
         IntentFilter f = new IntentFilter();
+        f.addAction(BluetoothDevice.ACTION_ACL_CONNECTED);
+        f.addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED);
         f.addAction("com.android.music.metachanged");
         f.addAction("com.android.music.playstatechanged");
         f.addAction("com.android.music.playbackcomplete");
@@ -185,9 +210,16 @@ public class MainActivity extends Activity implements LocationListener {
         f.addAction("com.samsung.sec.android.MusicPlayer.metachanged");
         f.addAction("android.bluetooth.a2dp.profile.action.PLAYING_STATE_CHANGED");
         f.addAction("android.bluetooth.a2dp.profile.action.CONNECTION_STATE_CHANGED");
+        f.addAction("android.bluetooth.a2dp-sink.profile.action.CONNECTION_STATE_CHANGED");
+        f.addAction("android.bluetooth.a2dp-sink.profile.action.PLAYING_STATE_CHANGED");
+        f.addAction("android.bluetooth.headset-client.profile.action.CONNECTION_STATE_CHANGED");
+        f.addAction("com.gocsdk.action.DEVICE_CONNECTED");
+        f.addAction("com.gocsdk.action.DEVICE_DISCONNECTED");
         f.addAction("com.gocsdk.action.BT_A2DP_INFO");
         f.addAction("com.syu.bt.action.A2DP_METADATA");
+        f.addAction("com.syu.bt.action.CONNECT_STATUS");
         f.addAction("com.car.bt.a2dp.metachanged");
+        f.addAction("com.car.bt.action.STATE");
         f.addAction("com.my.bt.music.info");
         try { registerReceiver(btMusicReceiver, f); } catch (Exception ignore) { }
     }
@@ -356,28 +388,49 @@ public class MainActivity extends Activity implements LocationListener {
         }
 
         if (phoneStatusText != null) {
+            BluetoothDevice connectedPhone = getConnectedPhoneDevice();
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             boolean musicActive = (am != null && am.isMusicActive());
-            int a2dpState = -1;
+            int a2dpState = -1, a2dpSink = -1, hfClient = -1;
             try {
                 BluetoothAdapter bad = BluetoothAdapter.getDefaultAdapter();
                 if (bad != null && bad.isEnabled()) {
                     a2dpState = bad.getProfileConnectionState(BluetoothProfile.A2DP);
+                    a2dpSink = bad.getProfileConnectionState(11); // A2DP_SINK
+                    hfClient = bad.getProfileConnectionState(16); // HEADSET_CLIENT
                 }
             } catch (Throwable ignore) { }
 
-            boolean connected = (a2dpState == BluetoothProfile.STATE_CONNECTED) || musicActive || (btTrack != null && !btTrack.isEmpty());
-            boolean connecting = (a2dpState == BluetoothProfile.STATE_CONNECTING);
+            boolean connected = (connectedPhone != null)
+                    || (a2dpSink == BluetoothProfile.STATE_CONNECTED)
+                    || (hfClient == BluetoothProfile.STATE_CONNECTED)
+                    || (a2dpState == BluetoothProfile.STATE_CONNECTED)
+                    || musicActive
+                    || (btTrack != null && !btTrack.isEmpty());
+
+            boolean connecting = (a2dpState == BluetoothProfile.STATE_CONNECTING)
+                    || (a2dpSink == BluetoothProfile.STATE_CONNECTING);
 
             if (connected) {
-                phoneStatusText.setText("● Mobile Phone: AUDIO CONNECTED (A2DP)");
+                String phoneName = (connectedPhone != null && connectedPhone.getName() != null && !connectedPhone.getName().isEmpty())
+                        ? connectedPhone.getName() : "Mobile Device";
+                phoneStatusText.setText("● Mobile Phone: CONNECTED (" + phoneName + ")");
                 phoneStatusText.setTextColor(GREEN);
+                if (btnPhoneAction != null) {
+                    btnPhoneAction.setText("PLAY BT MUSIC");
+                }
             } else if (connecting) {
-                phoneStatusText.setText("◐ Mobile Phone: CONNECTING (A2DP)...");
+                phoneStatusText.setText("◐ Mobile Phone: CONNECTING...");
                 phoneStatusText.setTextColor(AMBER);
+                if (btnPhoneAction != null) {
+                    btnPhoneAction.setText("CONNECTING...");
+                }
             } else {
                 phoneStatusText.setText("○ Mobile Phone: READY / STANDBY (Tap to connect)");
                 phoneStatusText.setTextColor(0xFFCFD8DC);
+                if (btnPhoneAction != null) {
+                    btnPhoneAction.setText("CONNECT PHONE");
+                }
             }
         }
 
@@ -552,11 +605,39 @@ public class MainActivity extends Activity implements LocationListener {
         try {
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             if (am != null) {
+                if (what == 0) {
+                    am.setStreamMute(AudioManager.STREAM_MUSIC, false);
+                    am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+                }
                 long now = SystemClock.uptimeMillis();
                 am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0));
                 am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0));
             }
         } catch (Throwable ignore) { }
+
+        try {
+            Intent mb = new Intent(Intent.ACTION_MEDIA_BUTTON);
+            mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_DOWN, keyCode));
+            sendOrderedBroadcast(mb, null);
+            mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_UP, keyCode));
+            sendOrderedBroadcast(mb, null);
+        } catch (Throwable ignore) { }
+
+        try {
+            String act = (what == 0) ? "PLAY_PAUSE" : (what > 0) ? "NEXT" : "PREV";
+            sendBroadcast(new Intent("com.syu.bt.action." + act));
+            sendBroadcast(new Intent("com.gocsdk.action.MUSIC_" + act));
+            sendBroadcast(new Intent("com.allwinner.bluetooth.action." + (what == 0 ? "PLAY" : act)));
+            sendBroadcast(new Intent("com.car.bt.action.MUSIC_" + (what == 0 ? "PLAY" : act)));
+            sendBroadcast(new Intent("com.ts.bt.action." + act));
+        } catch (Throwable ignore) { }
+
+        if (what == 0) {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (am != null && !am.isMusicActive() && btTrack == null) {
+                openCarBluetoothMusic();
+            }
+        }
     }
 
     // ---------------------------- GPS ----------------------------
@@ -590,12 +671,12 @@ public class MainActivity extends Activity implements LocationListener {
         return false;
     }
 
-    private void openCarBluetooth() {
+    private boolean openCarBluetooth() {
         // 1. Try known Chinese car head unit Bluetooth packages
         for (String p : PKG_BT) {
             try {
                 Intent i = getPackageManager().getLaunchIntentForPackage(p);
-                if (i != null) { startActivity(i); return; }
+                if (i != null) { startActivity(i); return true; }
             } catch (Throwable ignore) {}
         }
 
@@ -610,7 +691,7 @@ public class MainActivity extends Activity implements LocationListener {
                     String cls = ri.activityInfo.name.toLowerCase(Locale.US);
                     if (pkg.contains("blue") || pkg.contains("bt") || cls.contains("blue") || cls.contains("bt") || pkg.contains("phone")) {
                         Intent i = pm.getLaunchIntentForPackage(ri.activityInfo.packageName);
-                        if (i != null) { startActivity(i); return; }
+                        if (i != null) { startActivity(i); return true; }
                     }
                 }
             }
@@ -619,16 +700,206 @@ public class MainActivity extends Activity implements LocationListener {
         // 3. Fallback: Android Bluetooth settings
         try {
             startActivity(new Intent(Settings.ACTION_BLUETOOTH_SETTINGS));
-            return;
+            return true;
         } catch (Throwable ignore) {}
 
         // 4. Fallback: Android System settings
         try {
             startActivity(new Intent(Settings.ACTION_SETTINGS));
-            return;
+            return true;
         } catch (Throwable ignore) {}
 
         toast("Bluetooth is managed directly in DashPilot below.");
+        return false;
+    }
+
+    private boolean openCarBluetoothMusic() {
+        // 1. Search installed activities for dedicated Bluetooth Music / A2DP audio player
+        try {
+            PackageManager pm = getPackageManager();
+            List<ResolveInfo> list = pm.queryIntentActivities(new Intent(Intent.ACTION_MAIN), 0);
+            if (list != null) {
+                for (ResolveInfo ri : list) {
+                    String pkg = ri.activityInfo.packageName.toLowerCase(Locale.US);
+                    String cls = ri.activityInfo.name.toLowerCase(Locale.US);
+                    if ((pkg.contains("bt") || pkg.contains("blue") || cls.contains("bt") || cls.contains("blue"))
+                            && (cls.contains("music") || cls.contains("a2dp") || cls.contains("audio") || cls.contains("media"))) {
+                        Intent i = new Intent();
+                        i.setClassName(ri.activityInfo.packageName, ri.activityInfo.name);
+                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(i);
+                        return true;
+                    }
+                }
+            }
+        } catch (Throwable ignore) { }
+
+        // 2. Direct component fallbacks for Allwinner T3 / Chinese head units
+        String[][] btMusicComponents = {
+                {"com.syu.bt", "com.syu.bt.act.ActBtMusic"},
+                {"com.allwinner.bluetooth", "com.allwinner.bluetooth.MusicActivity"},
+                {"com.allwinner.bluetooth", "com.allwinner.bluetooth.A2dpActivity"},
+                {"com.car.bt", "com.car.bt.MusicActivity"},
+                {"com.gocsdk", "com.gocsdk.MusicActivity"},
+                {"com.ts.bt", "com.ts.bt.BtMusicActivity"},
+                {"com.forfan.bt", "com.forfan.bt.MusicActivity"},
+                {"cn.manstep.phonemirrorbox", "cn.manstep.phonemirrorbox.MusicActivity"}
+        };
+        for (String[] cmp : btMusicComponents) {
+            try {
+                Intent i = new Intent();
+                i.setClassName(cmp[0], cmp[1]);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                return true;
+            } catch (Throwable ignore) { }
+        }
+
+        return openCarBluetooth();
+    }
+
+    private void playPhoneMusic() {
+        toast("Routing Bluetooth Audio to Car Speakers...");
+
+        // 1. Unmute music stream and set volume high
+        try {
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                am.setStreamMute(AudioManager.STREAM_MUSIC, false);
+                int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+                int cur = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                if (cur < max * 0.7f) {
+                    am.setStreamVolume(AudioManager.STREAM_MUSIC, (int) (max * 0.85f), 0);
+                }
+                am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+            }
+        } catch (Throwable ignore) { }
+
+        // 2. Dispatch Media Play key event to phone
+        try {
+            long now = SystemClock.uptimeMillis();
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
+                am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
+            }
+        } catch (Throwable ignore) { }
+
+        // 3. Broadcast ordered media button
+        try {
+            Intent mb = new Intent(Intent.ACTION_MEDIA_BUTTON);
+            mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY));
+            sendOrderedBroadcast(mb, null);
+            mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY));
+            sendOrderedBroadcast(mb, null);
+        } catch (Throwable ignore) { }
+
+        // 4. Send vendor Chinese head unit AVRCP & Audio Source switch commands
+        String[] playIntents = {
+                "com.syu.bt.action.PLAY_PAUSE",
+                "com.syu.bt.action.MUSIC_PLAY",
+                "com.syu.ms.action.AUDIO_SOURCE",
+                "com.gocsdk.action.MUSIC_PLAY",
+                "com.allwinner.bluetooth.action.PLAY",
+                "com.allwinner.action.SWITCH_AUDIO_SOURCE",
+                "com.car.bt.action.MUSIC_PLAY",
+                "com.ts.bt.action.PLAY",
+                "com.forfan.action.BT_MUSIC"
+        };
+        for (String act : playIntents) {
+            try {
+                Intent i = new Intent(act);
+                if (act.contains("AUDIO_SOURCE")) {
+                    i.putExtra("source", "bluetooth");
+                    i.putExtra("source_id", 2);
+                }
+                sendBroadcast(i);
+            } catch (Throwable ignore) { }
+        }
+
+        // 5. Open Bluetooth Music Activity to physically switch MCU hardware audio relay
+        openCarBluetoothMusic();
+    }
+
+    private boolean isDeviceConnected(BluetoothDevice device) {
+        if (device == null) return false;
+        try {
+            Method m = device.getClass().getMethod("isConnected");
+            m.setAccessible(true);
+            Object res = m.invoke(device);
+            if (res instanceof Boolean && (Boolean) res) return true;
+        } catch (Throwable ignore) { }
+
+        try {
+            BluetoothAdapter ad = BluetoothAdapter.getDefaultAdapter();
+            if (ad != null && ad.isEnabled()) {
+                int a2dpSink = ad.getProfileConnectionState(11);
+                int hfClient = ad.getProfileConnectionState(16);
+                int a2dp = ad.getProfileConnectionState(BluetoothProfile.A2DP);
+                int hfp = ad.getProfileConnectionState(BluetoothProfile.HEADSET);
+                if (a2dpSink == 2 || hfClient == 2 || a2dp == 2 || hfp == 2) {
+                    String activeObd = (obd.manualDeviceAddress != null) ? obd.manualDeviceAddress : "";
+                    if (!device.getAddress().equalsIgnoreCase(activeObd) && !isObdCandidate(device.getName())) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Throwable ignore) { }
+
+        return false;
+    }
+
+    private BluetoothDevice getConnectedPhoneDevice() {
+        BluetoothAdapter ad = null;
+        try { ad = BluetoothAdapter.getDefaultAdapter(); } catch (Throwable ignore) { }
+        if (ad == null || !ad.isEnabled()) return null;
+
+        Set<BluetoothDevice> bonded = null;
+        try { bonded = ad.getBondedDevices(); } catch (Throwable ignore) { }
+        if (bonded == null || bonded.isEmpty()) return null;
+
+        String activeObdMac = (obd.manualDeviceAddress != null) ? obd.manualDeviceAddress : "";
+
+        // 1. Check if any non-OBD bonded device is connected via isConnected()
+        for (BluetoothDevice d : bonded) {
+            String mac = d.getAddress();
+            String name = (d.getName() != null) ? d.getName() : "";
+            if (!mac.equalsIgnoreCase(activeObdMac) && !isObdCandidate(name)) {
+                if (isDeviceConnected(d)) {
+                    return d;
+                }
+            }
+        }
+
+        // 2. Check last connected phone if still in bonded list
+        if (lastConnectedPhone != null) {
+            for (BluetoothDevice d : bonded) {
+                if (d.getAddress().equalsIgnoreCase(lastConnectedPhone.getAddress())) {
+                    return d;
+                }
+            }
+        }
+
+        // 3. Check profile connection states
+        int a2dpSink = -1, a2dp = -1, hfClient = -1, hfp = -1;
+        try { a2dpSink = ad.getProfileConnectionState(11); } catch (Throwable ignore) { }
+        try { hfClient = ad.getProfileConnectionState(16); } catch (Throwable ignore) { }
+        try { a2dp = ad.getProfileConnectionState(BluetoothProfile.A2DP); } catch (Throwable ignore) { }
+        try { hfp = ad.getProfileConnectionState(BluetoothProfile.HEADSET); } catch (Throwable ignore) { }
+
+        if (a2dpSink == 2 || hfClient == 2 || a2dp == 2 || hfp == 2) {
+            String savedPhoneMac = prefs.getString("phone_mac", "");
+            for (BluetoothDevice d : bonded) {
+                if (!savedPhoneMac.isEmpty() && savedPhoneMac.equalsIgnoreCase(d.getAddress())) return d;
+            }
+            for (BluetoothDevice d : bonded) {
+                if (!d.getAddress().equalsIgnoreCase(activeObdMac) && !isObdCandidate(d.getName())) {
+                    return d;
+                }
+            }
+        }
+
+        return null;
     }
 
     private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
@@ -796,11 +1067,12 @@ public class MainActivity extends Activity implements LocationListener {
                 activeBadge.setPadding(dp(8), dp(4), dp(8), dp(4));
                 card.addView(activeBadge);
             } else if (isLikelyPhone) {
-                // Phone / Audio device: show CONNECT PHONE + secondary SET OBD
+                final boolean isConnected = isDeviceConnected(d);
                 card.setClickable(true);
                 card.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
-                        connectPhoneAudio(d);
+                        if (isConnected) playPhoneMusic();
+                        else connectPhoneAudio(d);
                     }
                 });
 
@@ -808,13 +1080,32 @@ public class MainActivity extends Activity implements LocationListener {
                 actRow.setOrientation(LinearLayout.HORIZONTAL);
                 actRow.setGravity(Gravity.CENTER_VERTICAL);
 
-                TextView btnPhone = button("CONNECT PHONE", 12, new Runnable() {
-                    public void run() {
-                        connectPhoneAudio(d);
-                    }
-                });
-                btnPhone.setPadding(dp(10), dp(6), dp(10), dp(6));
-                actRow.addView(btnPhone);
+                if (isConnected) {
+                    TextView connBadge = label(12, GREEN);
+                    connBadge.setText(" CONNECTED ✓ ");
+                    connBadge.setTypeface(Typeface.DEFAULT_BOLD);
+                    connBadge.setBackground(badgeShape(0x3300E676));
+                    connBadge.setPadding(dp(8), dp(4), dp(8), dp(4));
+                    actRow.addView(connBadge);
+
+                    TextView btnPlay = button("PLAY SOUND", 12, new Runnable() {
+                        public void run() {
+                            playPhoneMusic();
+                        }
+                    });
+                    btnPlay.setPadding(dp(10), dp(6), dp(10), dp(6));
+                    LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    plp.leftMargin = dp(6);
+                    actRow.addView(btnPlay, plp);
+                } else {
+                    TextView btnPhone = button("CONNECT PHONE", 12, new Runnable() {
+                        public void run() {
+                            connectPhoneAudio(d);
+                        }
+                    });
+                    btnPhone.setPadding(dp(10), dp(6), dp(10), dp(6));
+                    actRow.addView(btnPhone);
+                }
 
                 TextView btnUse = button("SET OBD", 11, new Runnable() {
                     public void run() {
@@ -1100,7 +1391,7 @@ public class MainActivity extends Activity implements LocationListener {
         obdStatusText.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
         card.addView(obdStatusText);
 
-        // Control Buttons: CONNECT OBD | CONNECT PHONE | CAR BT APP | REFRESH
+        // Control Buttons: CONNECT OBD | CONNECT PHONE | PLAY BT MUSIC | CAR BT APP
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setPadding(0, dp(8), 0, dp(8));
@@ -1112,30 +1403,28 @@ public class MainActivity extends Activity implements LocationListener {
                 updateObdStatusCard();
             }
         });
-        btnConnectObd.setPadding(dp(8), dp(6), dp(8), dp(6));
+        btnConnectObd.setPadding(dp(6), dp(6), dp(6), dp(6));
 
         TextView btnConnectPhone = button("CONNECT PHONE", 13, new Runnable() {
             public void run() {
                 connectFirstPairedPhone();
             }
         });
-        btnConnectPhone.setPadding(dp(8), dp(6), dp(8), dp(6));
+        btnConnectPhone.setPadding(dp(6), dp(6), dp(6), dp(6));
+
+        TextView btnPlayMusic = button("PLAY BT MUSIC", 13, new Runnable() {
+            public void run() {
+                playPhoneMusic();
+            }
+        });
+        btnPlayMusic.setPadding(dp(6), dp(6), dp(6), dp(6));
 
         TextView btnCarBt = button("CAR BT APP", 13, new Runnable() {
             public void run() {
                 openCarBluetooth();
             }
         });
-        btnCarBt.setPadding(dp(8), dp(6), dp(8), dp(6));
-
-        TextView btnRefresh = button("REFRESH", 13, new Runnable() {
-            public void run() {
-                devicesListExpanded = true;
-                refreshPairedDevicesList();
-                toast("Refreshed Bluetooth device list.");
-            }
-        });
-        btnRefresh.setPadding(dp(8), dp(6), dp(8), dp(6));
+        btnCarBt.setPadding(dp(6), dp(6), dp(6), dp(6));
 
         LinearLayout.LayoutParams blp1 = new LinearLayout.LayoutParams(0, W, 1f);
         blp1.rightMargin = dp(6);
@@ -1147,9 +1436,9 @@ public class MainActivity extends Activity implements LocationListener {
 
         LinearLayout.LayoutParams blp3 = new LinearLayout.LayoutParams(0, W, 1f);
         blp3.rightMargin = dp(6);
-        btnRow.addView(btnCarBt, blp3);
+        btnRow.addView(btnPlayMusic, blp3);
 
-        btnRow.addView(btnRefresh, lp(0, W, 1f));
+        btnRow.addView(btnCarBt, lp(0, W, 1f));
         card.addView(btnRow);
 
         // Phone Audio & Calls Section Card (Directly clickable!)
@@ -1161,7 +1450,11 @@ public class MainActivity extends Activity implements LocationListener {
         phoneCard.setClickable(true);
         phoneCard.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                connectFirstPairedPhone();
+                if (getConnectedPhoneDevice() != null) {
+                    playPhoneMusic();
+                } else {
+                    connectFirstPairedPhone();
+                }
             }
         });
 
@@ -1173,15 +1466,19 @@ public class MainActivity extends Activity implements LocationListener {
         phoneInfo.addView(phoneStatusText);
 
         TextView phoneHint = label(12, 0x8CFFFFFF);
-        phoneHint.setText("Mobile Phone (Audio Streaming & Calls) • Tap to connect");
+        phoneHint.setText("Audio Active • Tap [PLAY BT MUSIC] to stream sound through car speakers");
         phoneHint.setPadding(0, dp(2), 0, 0);
         phoneInfo.addView(phoneHint);
 
         phoneCard.addView(phoneInfo, lp(0, W, 1f));
 
-        TextView btnPhoneAction = button("CONNECT PHONE", 13, new Runnable() {
+        btnPhoneAction = button("PLAY BT MUSIC", 13, new Runnable() {
             public void run() {
-                connectFirstPairedPhone();
+                if (getConnectedPhoneDevice() != null) {
+                    playPhoneMusic();
+                } else {
+                    connectFirstPairedPhone();
+                }
             }
         });
         btnPhoneAction.setPadding(dp(14), dp(8), dp(14), dp(8));
@@ -1307,13 +1604,14 @@ public class MainActivity extends Activity implements LocationListener {
 
         // Native app items
         String[] labels = {
-                "BLUETOOTH / PHONE", "CAR SETTINGS",
-                "CAR RADIO (FM/AM)", "MUSIC PLAYER",
-                "VIDEO PLAYER", "NAVIGATION / MAPS",
+                "BLUETOOTH PHONE", "BT MUSIC (A2DP)",
+                "CAR SETTINGS", "CAR RADIO (FM/AM)",
+                "LOCAL MUSIC", "NAVIGATION / MAPS",
                 "EQUALIZER / DSP", "ALL INSTALLED APPS"
         };
         Runnable[] actions = {
                 new Runnable() { public void run() { openCarBluetooth(); } },
+                new Runnable() { public void run() { playPhoneMusic(); } },
                 new Runnable() { public void run() {
                     if (!launchFirst(PKG_SETTINGS)) {
                         try { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
@@ -1327,7 +1625,6 @@ public class MainActivity extends Activity implements LocationListener {
                         catch (Throwable e) { toast("No music app found"); }
                     }
                 } },
-                new Runnable() { public void run() { if (!launchFirst(PKG_VIDEO)) toast("Video player not found"); } },
                 new Runnable() { public void run() { if (!launchFirst(PKG_MAPS)) toast("No maps app installed"); } },
                 new Runnable() { public void run() {
                     if (!launchFirst(PKG_EQ)) {
