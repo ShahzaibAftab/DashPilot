@@ -79,22 +79,8 @@ public class MainActivity extends Activity implements LocationListener {
     static final String[] PKG_VIDEO = {
             "com.syu.video", "com.car.video", "com.ts.video", "com.android.gallery3d"
     };
-    static final String[] PKG_YOUTUBE = {
-            "org.schabi.newpipe",                   // NewPipe (Ultra-lightweight, 0 ads, 1080p for 1GB RAM)
-            "org.schabi.newpipe.legacy",            // NewPipe Legacy (Android 7.1)
-            "com.google.android.apps.youtube.mango",// YouTube Go
-            "com.teamsmart.videomanager.tv",        // SmartTube
-            "com.liskovsoft.videomanager",          // SmartTube Next
-            "app.revanced.android.youtube",         // YouTube ReVanced
-            "com.vanced.android.youtube",           // YouTube Vanced
-            "com.google.android.youtube",           // Official YouTube
-            "com.syu.video", "com.car.video", "com.ts.video"
-    };
-    static final String[] PKG_MAPS = {
-            "com.google.android.apps.mapslite", "com.google.android.apps.navlite",
-            "com.google.android.apps.maps", "net.osmand.plus", "net.osmand",
-            "com.waze", "com.here.app.maps", "com.autonavi.amapauto"
-    };
+    static final String[] PKG_YOUTUBE = AppLaunchManager.PKG_YOUTUBE;
+    static final String[] PKG_MAPS = AppLaunchManager.PKG_MAPS;
     static final String[] PKG_EQ = {
             "com.syu.eq", "com.car.eq", "com.ts.eq", "com.forfan.eq"
     };
@@ -1291,56 +1277,30 @@ public class MainActivity extends Activity implements LocationListener {
             if (p == null || p.isEmpty()) continue;
             try {
                 Intent i = getPackageManager().getLaunchIntentForPackage(p);
-                if (i != null) { startActivity(i); return true; }
+                if (i != null) {
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+                    startActivity(i);
+                    return true;
+                }
             } catch (Throwable ignore) { }
         }
         return false;
     }
 
     private boolean launchMaps() {
-        // 1. Try launching Google Maps Go, Nav Lite, or installed maps app
-        if (launchFirst(PKG_MAPS)) {
-            return true;
+        if (!AppLaunchManager.launchMaps(this)) {
+            toast("No maps app installed");
+            return false;
         }
-
-        // 2. Generic geo intent for any installed navigation handler
-        try {
-            Intent geo = new Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q="));
-            geo.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(geo);
-            return true;
-        } catch (Throwable ignore) { }
-
-        // 3. Fallback: launch Google Maps Go directly in browser (lightweight PWA)
-        try {
-            Intent web = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps"));
-            web.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(web);
-            toast("Opening Google Maps Go in browser...");
-            return true;
-        } catch (Throwable ignore) { }
-
-        toast("No maps app installed");
-        return false;
+        return true;
     }
 
     private boolean launchYouTube() {
-        // 1. Try launching NewPipe, SmartTube, YouTube Go, or official YouTube app
-        if (launchFirst(PKG_YOUTUBE)) {
-            return true;
+        if (!AppLaunchManager.launchYouTube(this)) {
+            toast("No video player or browser installed");
+            return false;
         }
-
-        // 2. Fallback: Launch YouTube directly in browser (lightweight mobile web, no Play Services needed)
-        try {
-            Intent web = new Intent(Intent.ACTION_VIEW, Uri.parse("https://m.youtube.com"));
-            web.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(web);
-            toast("Opening YouTube in browser...");
-            return true;
-        } catch (Throwable ignore) { }
-
-        toast("No video player or browser installed");
-        return false;
+        return true;
     }
 
     private boolean openCarBluetooth() {
