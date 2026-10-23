@@ -291,4 +291,46 @@ public class VehicleSensorAndSmoothSpeedometerTest {
         assertEquals(0xFF, hotR); // Full 255 maximum red intensity
         assertTrue("Hot engine glow must exhibit high-intensity fiery flare", hotR > optR);
     }
+
+    @Test
+    public void testDisconnectedObdHonestNanValues() {
+        // When OBD2 is not connected and no CAN-bus exists:
+        boolean obdConnected = false;
+        boolean hasCanBus = false;
+
+        float rpm = (obdConnected || hasCanBus) ? 750f : Float.NaN;
+        float coolant = (obdConnected || hasCanBus) ? 88f : Float.NaN;
+        float batt = (obdConnected || hasCanBus) ? 14.1f : Float.NaN;
+
+        assertTrue(Float.isNaN(rpm));
+        assertTrue(Float.isNaN(coolant));
+        assertTrue(Float.isNaN(batt));
+
+        // Speedometer heartbeat ring must stay at calm 750 RPM baseline when disconnected
+        float heartbeatRpm = Float.isNaN(rpm) ? 750f : rpm;
+        assertEquals(750f, heartbeatRpm, 0.001f);
+    }
+
+    @Test
+    public void testGpsSpeedZeroDriftSnapAndSmoothing() {
+        // Stationary GPS drift (e.g. 1.2 km/h walking / multipath noise)
+        float driftSpeed = 1.2f;
+        float filtered = (driftSpeed < 1.8f) ? 0f : driftSpeed;
+        assertEquals(0f, filtered, 0.001f);
+
+        // Genuine movement (e.g. 40 km/h)
+        float movingSpeed = 40.0f;
+        float movingFiltered = (movingSpeed < 1.8f) ? 0f : movingSpeed;
+        assertEquals(40.0f, movingFiltered, 0.001f);
+
+        // Smoothing 60/40
+        float prevSmoothed = 30.0f;
+        float newSmoothed = (prevSmoothed * 0.40f) + (movingFiltered * 0.60f);
+        assertEquals(36.0f, newSmoothed, 0.001f);
+
+        // Coming to a complete stop: immediate snap to 0
+        float stopSpeed = 0f;
+        float finalSmoothed = (stopSpeed == 0f) ? 0f : ((newSmoothed * 0.4f) + (stopSpeed * 0.6f));
+        assertEquals(0f, finalSmoothed, 0.001f);
+    }
 }

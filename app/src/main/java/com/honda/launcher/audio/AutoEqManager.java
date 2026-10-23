@@ -134,6 +134,7 @@ public final class AutoEqManager implements AutoCloseable {
     // Last known track metadata
     private String lastTrackTitle = "";
     private String lastTrackArtist = "";
+    private long lastSpectrumApplyMs = 0;
 
     private OnTuningUpdateListener tuningListener;
 
@@ -277,6 +278,13 @@ public final class AutoEqManager implements AutoCloseable {
         smoothedMidEnergy = smoothedMidEnergy * 0.85f + avgMid * 0.15f;
         smoothedHighEnergy = smoothedHighEnergy * 0.85f + avgHigh * 0.15f;
 
+        // Rate-limit EQ updates to avoid rapid micro-shifts or audio pumping
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - lastSpectrumApplyMs < 1200) {
+            return;
+        }
+        lastSpectrumApplyMs = now;
+
         // Re-tune if spectrum dynamics have changed significantly
         applySettingsLocked();
         notifyListenerLocked(false);
@@ -415,8 +423,12 @@ public final class AutoEqManager implements AutoCloseable {
                 if (target > maxPositiveDb) maxPositiveDb = target;
             }
 
-            // Headroom protection: attenuate all bands by max positive boost to prevent digital clipping
-            float compensationDb = settings.headroomProtection ? maxPositiveDb : 0f;
+            // Headroom protection: subtle soft-knee compression only when boost is high (> +3.5 dB)
+            // Never crush mids or drop overall volume at normal listening levels!
+            float compensationDb = 0f;
+            if (settings.headroomProtection && maxPositiveDb > 3.5f) {
+                compensationDb = (maxPositiveDb - 3.5f) * 0.40f;
+            }
             appliedPreampDb = -compensationDb;
 
             short[] range = equalizer.getBandLevelRange();
@@ -438,7 +450,7 @@ public final class AutoEqManager implements AutoCloseable {
                 currentAppliedBandLevels[i] = finalDb;
                 int millibels = Math.round(finalDb * 100f);
                 millibels = Math.max(minMb, Math.min(maxMb, millibels));
-                if (levelsChanged || Math.abs(lastAppliedMillibels[i] - millibels) >= 15) {
+                if (levelsChanged || Math.abs(lastAppliedMillibels[i] - millibels) >= 25) {
                     equalizer.setBandLevel(band.index, (short) millibels);
                     lastAppliedMillibels[i] = (short) millibels;
                     levelsChanged = true;
@@ -469,6 +481,7 @@ public final class AutoEqManager implements AutoCloseable {
 
     /**
      * Intelligently classifies track and frequency character to formulate target EQ curves.
+     * Provides stable, musical tuning for all genres (Club, Rock, Pop, Desi/Vocal, Acoustic, Speech).
      */
     public static DynamicTarget evaluateDynamicMusicTarget(String title, String artist,
                                                            float lowE, float midE, float highE,
@@ -478,36 +491,58 @@ public final class AutoEqManager implements AutoCloseable {
         // 1. Check title/artist genre cues
         if (combined.contains("bass") || combined.contains("remix") || combined.contains("club") ||
             combined.contains("dance") || combined.contains("edm") || combined.contains("hip hop") ||
-            combined.contains("rap") || combined.contains("beat")) {
-            return new DynamicTarget(3.5f, -0.8f, 2.0f, "Auto: Club Bass & Punch");
+            combined.contains("rap") || combined.contains("beat") || combined.contains("trap") ||
+            combined.contains("house") || combined.contains("techno") || combined.contains("drill") ||
+            combined.contains("dubstep") || combined.contains("dj")) {
+            return new DynamicTarget(3.2f, 0.0f, 2.0f, "Auto: Club Bass & Punch");
         }
 
         if (combined.contains("rock") || combined.contains("metal") || combined.contains("guitar") ||
-            combined.contains("ac/dc") || combined.contains("live") || combined.contains("punk")) {
-            return new DynamicTarget(2.5f, 1.2f, 2.5f, "Auto: Rock Energy");
+            combined.contains("ac/dc") || combined.contains("live") || combined.contains("punk") ||
+            combined.contains("grunge") || combined.contains("alternative") || combined.contains("band") ||
+            combined.contains("drums")) {
+            return new DynamicTarget(2.4f, 1.4f, 2.2f, "Auto: Rock Energy & Crisp Mids");
         }
 
         if (combined.contains("acoustic") || combined.contains("vocal") || combined.contains("coke studio") ||
             combined.contains("unplugged") || combined.contains("ghazal") || combined.contains("piano") ||
-            combined.contains("sufi") || combined.contains("qawwali")) {
-            return new DynamicTarget(1.2f, 3.2f, 1.5f, "Auto: Vocal & Acoustic Clarity");
+            combined.contains("sufi") || combined.contains("qawwali") || combined.contains("violin") ||
+            combined.contains("classical") || combined.contains("orchestra") || combined.contains("jazz") ||
+            combined.contains("blues") || combined.contains("desi") || combined.contains("bollywood") ||
+            combined.contains("punjabi") || combined.contains("hindi") || combined.contains("urdu") ||
+            combined.contains("arijit") || combined.contains("atif") || combined.contains("rahat") ||
+            combined.contains("nusrat")) {
+            return new DynamicTarget(1.8f, 3.2f, 1.6f, "Auto: Vocal & Melodic Stage");
         }
 
         if (combined.contains("podcast") || combined.contains("interview") || combined.contains("talk") ||
-            combined.contains("news") || combined.contains("radio")) {
-            return new DynamicTarget(-2.0f, 4.0f, 0.5f, "Auto: Voice & Speech Focus");
+            combined.contains("news") || combined.contains("radio") || combined.contains("speech") ||
+            combined.contains("audiobook") || combined.contains("voice")) {
+            return new DynamicTarget(-2.0f, 4.0f, 0.5f, "Auto: Voice & Speech Clarity");
         }
 
-        // 2. Fall back to live spectrum energy dynamics
-        if (lowE > 1.4f * (midE + 0.1f)) {
-            // Already bass-heavy; clean up lower-mid muddiness and sparkle highs
-            return new DynamicTarget(1.0f, 0.5f, 2.0f, "Auto: Deep Spectrum Balance");
-        } else if (midE > 1.3f * (lowE + 0.1f)) {
-            // Vocal/mid dominant; warm up sub-bass and lift high sheen
-            return new DynamicTarget(2.5f, 1.0f, 1.8f, "Auto: Warm Vocal Stage");
-        } else if (highE > 1.3f * (midE + 0.1f)) {
-            // Bright track; anchor low-end and tame harsh sibilance
-            return new DynamicTarget(2.2f, 0.5f, -0.5f, "Auto: Smooth High-Fidelity");
+        if (combined.contains("pop") || combined.contains("r&b") || combined.contains("soul") ||
+            combined.contains("synth") || combined.contains("disco") || combined.contains("funk")) {
+            return new DynamicTarget(2.2f, 1.2f, 1.8f, "Auto: Modern Pop & Vocal Balance");
+        }
+
+        // 2. Fall back to normalized live spectrum energy dynamics
+        float totalE = lowE + midE + highE;
+        if (totalE > 0.20f) {
+            float lowRatio = lowE / totalE;
+            float midRatio = midE / totalE;
+            float highRatio = highE / totalE;
+
+            if (lowRatio > 0.48f) {
+                // Bass dominant; clean up lower-mid muddiness and sparkle highs
+                return new DynamicTarget(1.2f, 0.8f, 2.2f, "Auto: Deep Spectrum Balance");
+            } else if (midRatio > 0.48f) {
+                // Vocal/mid dominant; warm up sub-bass and lift high sheen
+                return new DynamicTarget(2.4f, 1.2f, 1.8f, "Auto: Warm Mid-Range Stage");
+            } else if (highRatio > 0.42f) {
+                // Bright track; anchor low-end and tame harsh sibilance
+                return new DynamicTarget(2.2f, 0.6f, -0.4f, "Auto: Smooth High-Fidelity");
+            }
         }
 
         return new DynamicTarget(1.8f, 1.2f, 1.5f, "Auto: Type R Balanced Stage");

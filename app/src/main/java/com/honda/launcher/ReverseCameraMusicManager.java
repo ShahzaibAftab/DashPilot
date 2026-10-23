@@ -22,6 +22,7 @@ public class ReverseCameraMusicManager {
 
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
     private static volatile boolean sReverseActive = false;
+    private static volatile int sLastKnownMusicVolume = -1;
 
     public static boolean isKeepMusicInReverseEnabled(Context context) {
         if (context == null) return true;
@@ -36,12 +37,26 @@ public class ReverseCameraMusicManager {
         applySystemReverseMuteConfig(context, !enabled);
     }
 
+    public static void recordActiveMusicVolume(Context context) {
+        if (context == null) return;
+        try {
+            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+            if (am != null) {
+                int vol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                if (vol > 0) {
+                    sLastKnownMusicVolume = vol;
+                }
+            }
+        } catch (Throwable ignore) { }
+    }
+
     /**
      * Applies system and vendor head-unit settings to prevent muting during reverse camera.
      */
     public static void applySystemReverseMuteConfig(Context context, boolean mute) {
         if (context == null) return;
         int val = mute ? 1 : 0;
+        int volVal = mute ? 0 : 100;
         String[] keys = {
                 "reverse_mute",
                 "canbus_reverse_mute",
@@ -50,15 +65,36 @@ public class ReverseCameraMusicManager {
                 "car_reverse_music_mute",
                 "mcu_reverse_mute",
                 "syu_reverse_mute",
-                "allwinner_reverse_mute"
+                "allwinner_reverse_mute",
+                "mute_in_reverse",
+                "back_car_mute",
+                "camera_mute",
+                "is_backcar_mute",
+                "is_reverse_mute",
+                "syu_backcar_mute",
+                "tw_reverse_mute",
+                "fyt_reverse_mute",
+                "car_backcar_mute",
+                "app_reverse_mute",
+                "app_backcar_mute"
         };
         for (String k : keys) {
-            try {
-                Settings.System.putInt(context.getContentResolver(), k, val);
-            } catch (Throwable ignore) { }
-            try {
-                Settings.Global.putInt(context.getContentResolver(), k, val);
-            } catch (Throwable ignore) { }
+            try { Settings.System.putInt(context.getContentResolver(), k, val); } catch (Throwable ignore) { }
+            try { Settings.Global.putInt(context.getContentResolver(), k, val); } catch (Throwable ignore) { }
+            try { Settings.Secure.putInt(context.getContentResolver(), k, val); } catch (Throwable ignore) { }
+        }
+        String[] volKeys = {
+                "backcar_volume",
+                "reverse_volume",
+                "mcu_reverse_volume",
+                "back_car_volume",
+                "syu_reverse_volume",
+                "fyt_reverse_volume",
+                "reverse_media_volume"
+        };
+        for (String vk : volKeys) {
+            try { Settings.System.putInt(context.getContentResolver(), vk, volVal); } catch (Throwable ignore) { }
+            try { Settings.Global.putInt(context.getContentResolver(), vk, volVal); } catch (Throwable ignore) { }
         }
     }
 
@@ -191,72 +227,78 @@ public class ReverseCameraMusicManager {
             boolean isInteractive = (pm != null && pm.isInteractive());
             if (isInteractive) {
                 // Screen is still on, meaning an overlay or system window (such as reverse camera) took focus
-                sHandler.postDelayed(new Runnable() {
-                    @Override public void run() {
-                        if (isKeepMusicInReverseEnabled(context)) {
-                            unmuteAndResumePlayback(context);
+                long[] delays = {100, 300, 600, 1000, 1600, 2500, 4000, 6000};
+                for (long d : delays) {
+                    sHandler.postDelayed(new Runnable() {
+                        @Override public void run() {
+                            if (isKeepMusicInReverseEnabled(context)) {
+                                unmuteAndResumePlayback(context);
+                            }
                         }
-                    }
-                }, 200);
-                sHandler.postDelayed(new Runnable() {
-                    @Override public void run() {
-                        if (isKeepMusicInReverseEnabled(context)) {
-                            unmuteAndResumePlayback(context);
-                        }
-                    }
-                }, 600);
+                    }, d);
+                }
             }
         } catch (Throwable ignore) { }
     }
 
     /**
-     * Unmutes the music audio stream, requests audio focus, and dispatches media play commands.
+     * Unmutes the music audio stream and ensures playback is uninterrupted.
+     * Never sends toggle/pause commands if music is already playing.
      */
     public static void unmuteAndResumePlayback(Context context) {
         if (context == null) return;
+        applySystemReverseMuteConfig(context, false);
+        boolean wasPlaying = false;
         try {
             AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
             if (am != null) {
-                // 1. Unmute music stream
-                am.setStreamMute(AudioManager.STREAM_MUSIC, false);
+                // 1. Unmute music stream using both adjustStreamVolume and setStreamMute
+                try { am.setStreamMute(AudioManager.STREAM_MUSIC, false); } catch (Throwable ignore) { }
+                try { am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0); } catch (Throwable ignore) { }
 
-                // 2. Request audio focus with GAIN
-                am.requestAudioFocus(new AudioManager.OnAudioFocusChangeListener() {
-                    @Override public void onAudioFocusChange(int focusChange) {
-                        Log.d(TAG, "OnAudioFocusChange during reverse: " + focusChange);
-                    }
-                }, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN);
+                // 2. Ensure volume was not pulled to zero
+                int vol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+                if (vol == 0) {
+                    int target = (sLastKnownMusicVolume > 0) ? sLastKnownMusicVolume
+                            : Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) * 2 / 3);
+                    am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0);
+                }
 
-                // 3. Re-dispatch Play key events to counteract any PAUSE sent by camera overlay
-                long now = SystemClock.uptimeMillis();
-                am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
-                am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
+                wasPlaying = am.isMusicActive();
+
+                // 3. If music was interrupted/paused by reverse camera, send explicit PLAY
+                if (!wasPlaying) {
+                    long now = SystemClock.uptimeMillis();
+                    am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
+                    am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
+                }
             }
         } catch (Throwable ignore) { }
 
-        // Broadcast media button play intent
-        try {
-            Intent mb = new Intent(Intent.ACTION_MEDIA_BUTTON);
-            mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY));
-            context.sendOrderedBroadcast(mb, null);
-            mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY));
-            context.sendOrderedBroadcast(mb, null);
-        } catch (Throwable ignore) { }
-
-        // Broadcast vendor Chinese head-unit music play intents
-        String[] playIntents = {
-                "com.syu.bt.action.MUSIC_PLAY",
-                "com.syu.bt.action.PLAY_PAUSE",
-                "com.gocsdk.action.MUSIC_PLAY",
-                "com.allwinner.bluetooth.action.PLAY",
-                "com.car.bt.action.MUSIC_PLAY",
-                "com.ts.bt.action.PLAY",
-                "com.forfan.action.BT_MUSIC"
-        };
-        for (String act : playIntents) {
+        // Only send play intents if audio stopped playing
+        if (!wasPlaying) {
             try {
-                context.sendBroadcast(new Intent(act));
+                Intent mb = new Intent(Intent.ACTION_MEDIA_BUTTON);
+                mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY));
+                context.sendOrderedBroadcast(mb, null);
+                mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY));
+                context.sendOrderedBroadcast(mb, null);
             } catch (Throwable ignore) { }
+
+            // Broadcast vendor Chinese head-unit explicit PLAY intents (DO NOT broadcast PLAY_PAUSE!)
+            String[] playIntents = {
+                    "com.syu.bt.action.MUSIC_PLAY",
+                    "com.gocsdk.action.MUSIC_PLAY",
+                    "com.allwinner.bluetooth.action.PLAY",
+                    "com.car.bt.action.MUSIC_PLAY",
+                    "com.ts.bt.action.PLAY",
+                    "com.forfan.action.BT_MUSIC"
+            };
+            for (String act : playIntents) {
+                try {
+                    context.sendBroadcast(new Intent(act));
+                } catch (Throwable ignore) { }
+            }
         }
     }
 }

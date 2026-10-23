@@ -73,4 +73,20 @@ public class SavedMusicManagerTest {
             assertTrue("Title '" + title + "' must be ignored", shouldIgnore);
         }
     }
+
+    @Test
+    public void testOnDemandDownloadFilenameGeneration() {
+        String title = "Starboy";
+        String artist = "The Weeknd";
+        String combined = (artist != null && !artist.trim().isEmpty() && !title.contains(artist))
+                ? title.trim() + " - " + artist.trim() : title.trim();
+        String filename = SavedMusicManager.sanitizeFilename(combined) + ".m4a";
+        assertEquals("Starboy - The Weeknd.m4a", filename);
+
+        // Track already containing artist in title
+        String title2 = "Starboy - The Weeknd";
+        String combined2 = (!title2.contains(artist)) ? title2.trim() + " - " + artist.trim() : title2.trim();
+        String filename2 = SavedMusicManager.sanitizeFilename(combined2) + ".m4a";
+        assertEquals("Starboy - The Weeknd.m4a", filename2);
+    }
 }

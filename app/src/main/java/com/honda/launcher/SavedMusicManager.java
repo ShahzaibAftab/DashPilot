@@ -147,34 +147,43 @@ public class SavedMusicManager {
         return list;
     }
 
-    // ---------------------------- Recording Logic ----------------------------
+    // ---------------------------- Download / Recording Logic ----------------------------
 
-    public synchronized void onTrackPlaying(String trackTitle, String artist, boolean autoSaveEnabled) {
-        if (!autoSaveEnabled) {
-            if (isRecording) stopRecording();
-            return;
-        }
+    public synchronized boolean isTrackDownloaded(String trackTitle, String artist) {
+        if (trackTitle == null || trackTitle.trim().isEmpty()) return false;
+        String name = (artist != null && !artist.trim().isEmpty() && !trackTitle.contains(artist))
+                ? trackTitle.trim() + " - " + artist.trim() : trackTitle.trim();
+        name = sanitizeFilename(name);
+        File dir = getStorageDir();
+        File f1 = new File(dir, name + ".m4a");
+        if (f1.exists() && f1.length() > 30000) return true;
+        File f2 = new File(dir, sanitizeFilename(trackTitle.trim()) + ".m4a");
+        return f2.exists() && f2.length() > 30000;
+    }
 
-        if (trackTitle == null || trackTitle.trim().isEmpty() ||
-            trackTitle.contains("Nothing playing") ||
-            trackTitle.contains("Playing Audio")) {
-            return;
-        }
+    public synchronized boolean isDownloading() {
+        return isRecording;
+    }
 
-        String sanitizedTitle = trackTitle.trim();
-        String sanitizedArtist = (artist != null) ? artist.trim() : "";
+    public synchronized String getDownloadingTitle() {
+        return currentRecTitle;
+    }
 
-        // Already recording this exact song
-        if (isRecording && sanitizedTitle.equalsIgnoreCase(currentRecTitle)) {
-            return;
-        }
-
-        // Song changed or new song started: stop previous and start new recording
+    public synchronized boolean startDownload(String title, String artist) {
+        if (title == null || title.trim().isEmpty()) return false;
         if (isRecording) {
             stopRecording();
         }
+        startRecording(title.trim(), (artist != null) ? artist.trim() : "");
+        return isRecording;
+    }
 
-        startRecording(sanitizedTitle, sanitizedArtist);
+    public synchronized void stopDownload() {
+        stopRecording();
+    }
+
+    public synchronized void onTrackPlaying(String trackTitle, String artist, boolean autoSaveEnabled) {
+        // Deprecated: replaced by on-demand download button on music control bar
     }
 
     public static String sanitizeFilename(String raw) {
@@ -187,14 +196,9 @@ public class SavedMusicManager {
     private synchronized void startRecording(String title, String artist) {
         try {
             File dir = getStorageDir();
-            String name = (artist != null && !artist.isEmpty()) ? title + " - " + artist : title;
+            String name = (artist != null && !artist.isEmpty() && !title.contains(artist)) ? title + " - " + artist : title;
             name = sanitizeFilename(name);
             File outFile = new File(dir, name + ".m4a");
-
-            // If file already exists and is complete (> 100KB), don't overwrite
-            if (outFile.exists() && outFile.length() > 100000) {
-                return;
-            }
 
             recorder = new MediaRecorder();
             try {
@@ -204,7 +208,7 @@ public class SavedMusicManager {
             }
             recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
             recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-            recorder.setAudioEncodingBitRate(128000);
+            recorder.setAudioEncodingBitRate(192000);
             recorder.setAudioSamplingRate(44100);
             recorder.setOutputFile(outFile.getAbsolutePath());
             recorder.prepare();

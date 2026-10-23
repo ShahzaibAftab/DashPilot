@@ -78,4 +78,27 @@ public class NowPlayingService extends NotificationListenerService {
         }
         super.onDestroy();
     }
+
+    @Override
+    public void onNotificationPosted(android.service.notification.StatusBarNotification sbn) {
+        if (sbn == null) return;
+        android.app.Notification n = sbn.getNotification();
+        if (n == null || n.extras == null) return;
+        CharSequence titleCs = n.extras.getCharSequence(android.app.Notification.EXTRA_TITLE);
+        CharSequence textCs = n.extras.getCharSequence(android.app.Notification.EXTRA_TEXT);
+        if (titleCs != null && titleCs.length() > 0) {
+            String title = titleCs.toString().trim();
+            String artist = (textCs != null) ? textCs.toString().trim() : "";
+            String pkg = sbn.getPackageName();
+            if (n.extras.containsKey(android.app.Notification.EXTRA_MEDIA_SESSION) ||
+                (pkg != null && (pkg.contains("music") || pkg.contains("spotify") ||
+                 pkg.contains("youtube") || pkg.contains("audio") ||
+                 pkg.contains("bt") || pkg.contains("player") || pkg.contains("sound")))) {
+                Intent metaIntent = new Intent("com.honda.launcher.METADATA_UPDATED");
+                metaIntent.putExtra("title", title);
+                metaIntent.putExtra("artist", artist);
+                sendBroadcast(metaIntent);
+            }
+        }
+    }
 }

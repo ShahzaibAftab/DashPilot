@@ -217,3 +217,49 @@ Trip meter and top speed, speed-limit alert, throttle bar and peak RPM, album ar
         - Sliders dynamically animate and reflect real-time frequency curves.
       - **Launcher Settings Toggle:**
         - Added toggle in swipe-left Settings panel: **"AUTO AUDIO TUNING"** (Auto-adapts EQ curve to music genre and vehicle speed, enabled by default).
+
+## 11. Field Test Resolutions (Honda City 2018 Allwinner T3)
+
+1. **Reverse Camera Music Playback Continuity:**
+   - **Root Cause:** Sending `AUDIOFOCUS_GAIN` was stealing audio focus from the Bluetooth A2DP audio engine and causing it to pause. In addition, broadcasting vendor `PLAY_PAUSE` intents toggled already-playing music to paused.
+   - **Fix Implemented:**
+     - Removed focus stealing; un-mutes `STREAM_MUSIC` directly via `adjustStreamVolume(STREAM_MUSIC, ADJUST_UNMUTE, 0)` and `setStreamMute(STREAM_MUSIC, false)`.
+     - Caches active music volume (`sLastKnownMusicVolume`) and restores volume if reverse camera firmware pulls it to 0.
+     - Checks `am.isMusicActive()` before dispatching media events (never sends media key if music is already actively playing, and completely removed `PLAY_PAUSE` toggle broadcast).
+     - Expanded Allwinner T3 / Syu firmware settings overrides: `reverse_mute`, `canbus_reverse_mute`, `backcar_mute`, `sys_reverse_mute`, `car_reverse_music_mute`, `mcu_reverse_mute`, `syu_reverse_mute`, `allwinner_reverse_mute`, `mute_in_reverse`, `back_car_mute`, `camera_mute`, `is_backcar_mute`, `is_reverse_mute`, `syu_backcar_mute`, `tw_reverse_mute`, `fyt_reverse_mute`.
+     - 6-second staggered un-mute watchdog when `MainActivity` is paused to defeat slow-launching camera overlay activities.
+
+2. **On-Demand Music Download Icon (Instead of Auto-Save):**
+   - **User Requirement:** On-demand download icon on the music bar when phone is connected and music is playing, saving the file to Car LCD storage with the exact mobile track name (`title - artist.m4a`).
+   - **Fix Implemented:**
+     - Replaced automatic background recording with on-demand `btnDownloadMusic` on the home screen music bar.
+     - Linked to live phone connection and playback state:
+       - Disconnected or idle: Disabled (`0x44FFFFFF`).
+       - Device connected & music playing (not yet saved): Enabled `[ ⬇ DOWNLOAD ]`.
+       - While recording: Active downloading state `[ ● DOWNLOADING ]` in bright red (`0xFFFF3B30`).
+       - Once stored: Displays `[ ✓ SAVED ]` in green (`0xFF34C759`).
+     - Kept `CAR MEMORY` library button so users can browse, play, and delete downloaded tracks offline on the car LCD anytime.
+
+3. **Speedometer GPS Filtering & Disconnected Gauge Honesty:**
+   - **Speedometer Root Cause:** `NETWORK_PROVIDER` was enabled alongside `GPS_PROVIDER`, causing cellular/Wi-Fi triangulation coordinate jumps of 400–800m without `hasSpeed()`, which triggered distance-over-time calculations resulting in massive fake speed spikes.
+   - **Speedometer Fix:**
+     - Strictly listens to `LocationManager.GPS_PROVIDER` (dropped `NETWORK_PROVIDER`).
+     - Discards fixes with accuracy > 30m.
+     - Stationary zero-drift snap: Speeds below 1.8 km/h snap strictly to 0.0 km/h.
+     - Sane automotive limit clamp (260 km/h) and 60/40 exponential moving average smoothing.
+   - **Telemetry Without OBD2:**
+     - Without OBD2 connected, Coolant, Battery, RPM, and Load display honest disconnected states (`--` / `Float.NaN`) unless real CAN-bus or 12V battery rail readings exist.
+     - Speedometer heartbeat pulse ring stays at a calm 750 RPM baseline when disconnected.
+     - Aurora ambient background stays at a calm 80°C operating tint without false danger alerts.
+
+4. **AutoEQ Dynamic Stability & Genre Handling:**
+   - **Root Cause:** Headroom protection previously subtracted `maxPositiveDb` unconditionally from all bands, crushing volume and mids by -3.5 dB. Live FFT spectrum updates also ran on every frame without rate-limiting.
+   - **Fix Implemented:**
+     - Soft-knee compression applied only when requested boost exceeds +3.5 dB: `(max - 3.5) * 0.40f`. Normal listening levels preserve 100% volume and vocal mids.
+     - Spectrum update rate-limiting: FFT adaptations throttled to 1.2s intervals with normalized energy balance.
+     - Broadened genre classification: Pop, Rock/Metal, EDM/Club/Trap, Coke Studio/Desi/Ghazal, Acoustic, and Voice/Speech.
+     - Increased band level update threshold to 25 millibels (0.25 dB) to prevent micro-jitter.
+
+5. **Track Title on Dashboard:**
+   - Queries `MediaSessionManager`, broadcasts (`com.honda.launcher.METADATA_UPDATED`, `com.spotify.music.metadatachanged`, etc.), and Allwinner/Syu system settings (`com.syu.bt.music.name`, `syu_music_title`, `bt_music_name`, etc.).
+   - Whenever music is playing, the dashboard displays the real song name (`title - artist` or `title`) instead of generic "now playing" or "Playing Audio (Bluetooth / Media)".

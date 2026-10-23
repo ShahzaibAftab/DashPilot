@@ -476,4 +476,20 @@ public class VehicleSensorManager {
     public String getCoolantSource() { return coolantSource; }
     public String getRpmSource() { return rpmSource; }
     public boolean isCanBusAvailable() { return canBusAvailable; }
+
+    public boolean hasRealRpm() {
+        return canBusAvailable && canBusRpm > 0;
+    }
+
+    public boolean hasRealCoolant() {
+        return canBusCoolant > -100f;
+    }
+
+    public boolean hasRealBattery() {
+        return canBusVolts > 0 || lastBatteryMv >= 8000;
+    }
+
+    public boolean hasRealFuel() {
+        return canBusFuel >= 0;
+    }
 }
