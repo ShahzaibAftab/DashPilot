@@ -80,8 +80,9 @@ public class MainActivity extends Activity implements LocationListener {
             "com.syu.video", "com.car.video", "com.ts.video", "com.android.gallery3d"
     };
     static final String[] PKG_MAPS = {
-            "com.google.android.apps.maps", "com.google.android.apps.mapslite", "net.osmand.plus", "net.osmand",
-            "com.waze", "com.autonavi.amapauto"
+            "com.google.android.apps.mapslite", "com.google.android.apps.navlite",
+            "com.google.android.apps.maps", "net.osmand.plus", "net.osmand",
+            "com.waze", "com.here.app.maps", "com.autonavi.amapauto"
     };
     static final String[] PKG_EQ = {
             "com.syu.eq", "com.car.eq", "com.ts.eq", "com.forfan.eq"
@@ -1285,6 +1286,33 @@ public class MainActivity extends Activity implements LocationListener {
         return false;
     }
 
+    private boolean launchMaps() {
+        // 1. Try launching Google Maps Go, Nav Lite, or installed maps app
+        if (launchFirst(PKG_MAPS)) {
+            return true;
+        }
+
+        // 2. Generic geo intent for any installed navigation handler
+        try {
+            Intent geo = new Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q="));
+            geo.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(geo);
+            return true;
+        } catch (Throwable ignore) { }
+
+        // 3. Fallback: launch Google Maps Go directly in browser (lightweight PWA)
+        try {
+            Intent web = new Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/maps"));
+            web.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(web);
+            toast("Opening Google Maps Go in browser...");
+            return true;
+        } catch (Throwable ignore) { }
+
+        toast("No maps app installed");
+        return false;
+    }
+
     private boolean openCarBluetooth() {
         // 1. Try known Chinese car head unit Bluetooth packages
         for (String p : PKG_BT) {
@@ -2450,7 +2478,7 @@ public class MainActivity extends Activity implements LocationListener {
         String[] labels = {
                 "BLUETOOTH PHONE", "BT MUSIC (A2DP)",
                 "CAR SETTINGS", "CAR RADIO (FM/AM)",
-                "LOCAL MUSIC", "NAVIGATION / MAPS",
+                "LOCAL MUSIC", "GOOGLE MAPS GO / NAVIGATION",
                 "EQUALIZER / DSP", "ALL INSTALLED APPS"
         };
         Runnable[] actions = {
@@ -2469,7 +2497,7 @@ public class MainActivity extends Activity implements LocationListener {
                         catch (Throwable e) { toast("No music app found"); }
                     }
                 } },
-                new Runnable() { public void run() { if (!launchFirst(PKG_MAPS)) toast("No maps app installed"); } },
+                new Runnable() { public void run() { launchMaps(); } },
                 new Runnable() { public void run() {
                     if (!launchFirst(PKG_EQ)) {
                         try { startActivity(new Intent(MainActivity.this, EqualizerActivity.class)); }
@@ -2701,6 +2729,12 @@ public class MainActivity extends Activity implements LocationListener {
         });
         btnSavedMusic.setPadding(dp(8), dp(4), dp(8), dp(4));
         bar.addView(btnSavedMusic, barLp());
+
+        TextView btnMaps = button("🗺 MAPS", 12, new Runnable() {
+            public void run() { launchMaps(); }
+        });
+        btnMaps.setPadding(dp(8), dp(4), dp(8), dp(4));
+        bar.addView(btnMaps, barLp());
 
         bar.addView(barBtn("PREV", -1), barLp());
         bar.addView(barBtn("PLAY / PAUSE", 0), barLp());
