@@ -79,6 +79,17 @@ public class MainActivity extends Activity implements LocationListener {
     static final String[] PKG_VIDEO = {
             "com.syu.video", "com.car.video", "com.ts.video", "com.android.gallery3d"
     };
+    static final String[] PKG_YOUTUBE = {
+            "org.schabi.newpipe",                   // NewPipe (Ultra-lightweight, 0 ads, 1080p for 1GB RAM)
+            "org.schabi.newpipe.legacy",            // NewPipe Legacy (Android 7.1)
+            "com.google.android.apps.youtube.mango",// YouTube Go
+            "com.teamsmart.videomanager.tv",        // SmartTube
+            "com.liskovsoft.videomanager",          // SmartTube Next
+            "app.revanced.android.youtube",         // YouTube ReVanced
+            "com.vanced.android.youtube",           // YouTube Vanced
+            "com.google.android.youtube",           // Official YouTube
+            "com.syu.video", "com.car.video", "com.ts.video"
+    };
     static final String[] PKG_MAPS = {
             "com.google.android.apps.mapslite", "com.google.android.apps.navlite",
             "com.google.android.apps.maps", "net.osmand.plus", "net.osmand",
@@ -1313,6 +1324,25 @@ public class MainActivity extends Activity implements LocationListener {
         return false;
     }
 
+    private boolean launchYouTube() {
+        // 1. Try launching NewPipe, SmartTube, YouTube Go, or official YouTube app
+        if (launchFirst(PKG_YOUTUBE)) {
+            return true;
+        }
+
+        // 2. Fallback: Launch YouTube directly in browser (lightweight mobile web, no Play Services needed)
+        try {
+            Intent web = new Intent(Intent.ACTION_VIEW, Uri.parse("https://m.youtube.com"));
+            web.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(web);
+            toast("Opening YouTube in browser...");
+            return true;
+        } catch (Throwable ignore) { }
+
+        toast("No video player or browser installed");
+        return false;
+    }
+
     private boolean openCarBluetooth() {
         // 1. Try known Chinese car head unit Bluetooth packages
         for (String p : PKG_BT) {
@@ -2478,7 +2508,7 @@ public class MainActivity extends Activity implements LocationListener {
         String[] labels = {
                 "BLUETOOTH PHONE", "BT MUSIC (A2DP)",
                 "CAR SETTINGS", "CAR RADIO (FM/AM)",
-                "LOCAL MUSIC", "GOOGLE MAPS GO / NAVIGATION",
+                "YOUTUBE / VIDEO", "GOOGLE MAPS GO / NAVIGATION",
                 "EQUALIZER / DSP", "ALL INSTALLED APPS"
         };
         Runnable[] actions = {
@@ -2491,12 +2521,7 @@ public class MainActivity extends Activity implements LocationListener {
                     }
                 } },
                 new Runnable() { public void run() { if (!launchFirst(PKG_RADIO)) toast("Car radio app not found"); } },
-                new Runnable() { public void run() {
-                    if (!launchFirst(PKG_MUSIC)) {
-                        try { startActivity(Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_MUSIC)); }
-                        catch (Throwable e) { toast("No music app found"); }
-                    }
-                } },
+                new Runnable() { public void run() { launchYouTube(); } },
                 new Runnable() { public void run() { launchMaps(); } },
                 new Runnable() { public void run() {
                     if (!launchFirst(PKG_EQ)) {
@@ -2735,6 +2760,12 @@ public class MainActivity extends Activity implements LocationListener {
         });
         btnMaps.setPadding(dp(8), dp(4), dp(8), dp(4));
         bar.addView(btnMaps, barLp());
+
+        TextView btnYt = button("▶ YOUTUBE", 12, new Runnable() {
+            public void run() { launchYouTube(); }
+        });
+        btnYt.setPadding(dp(8), dp(4), dp(8), dp(4));
+        bar.addView(btnYt, barLp());
 
         bar.addView(barBtn("PREV", -1), barLp());
         bar.addView(barBtn("PLAY / PAUSE", 0), barLp());
