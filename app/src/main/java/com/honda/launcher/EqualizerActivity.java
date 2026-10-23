@@ -436,6 +436,13 @@ public class EqualizerActivity extends Activity {
         stopViz();
     }
 
+    @Override protected void onDestroy() {
+        super.onDestroy();
+        if (autoEq != null) {
+            autoEq.setOnTuningUpdateListener(null);
+        }
+    }
+
     @Override public void onRequestPermissionsResult(int rc, String[] p, int[] r) { startViz(); }
 
     // ---------------- views ----------------
@@ -459,11 +466,12 @@ public class EqualizerActivity extends Activity {
             r.set(0, 0, w, h);
             p.setColor(0x14FFFFFF);
             c.drawRoundRect(r, rad, rad, p);
-            float fy = h * (1f - (level - min) / (float) (max - min));
+            float range = (max > min) ? (float) (max - min) : 1f;
+            float fy = h * (1f - (level - min) / range);
             r.set(0, fy, w, h);
             p.setColor(RED);
             c.drawRoundRect(r, rad, rad, p);
-            float zy = h * (1f - (0 - min) / (float) (max - min));
+            float zy = h * (1f - (0 - min) / range);
             p.setColor(0x66FFFFFF);
             c.drawRect(0, zy - 1, w, zy + 1, p);
         }

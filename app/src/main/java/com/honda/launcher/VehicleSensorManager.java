@@ -44,7 +44,7 @@ public class VehicleSensorManager {
     private volatile String rpmSource = "Sensor Standby";
 
     private volatile boolean running = false;
-    private long tripStartTime = 0;
+    private long tripStartTime = SystemClock.elapsedRealtime();
     private long lastSpeedTime = 0;
     private float lastSpeed = 0f;
     private float currentSpeed = 0f;

@@ -37,11 +37,26 @@ public class ObdManagerTest {
         m.setAccessible(true);
 
         // "43 03 00" -> P0300 (Random Misfire)
-        @SuppressWarnings("unchecked")
-        List<String> codes = (List<String>) m.invoke(obd, "4303000000");
+        List<String> codes = obd.parseDtc("4303000000");
         assertNotNull(codes);
         assertEquals(1, codes.size());
         assertEquals("P0300", codes.get(0));
+    }
+
+    @Test
+    public void testParseDtc_CanBusWithCountPrefix() {
+        // ISO 15765-4 CAN Mode 03 response: "43 01 03 00 00 00" (byte 1 = "01" count, byte 2-3 = "0300" DTC P0300)
+        List<String> codes = obd.parseDtc("430103000000");
+        assertNotNull(codes);
+        assertEquals(1, codes.size());
+        assertEquals("P0300", codes.get(0));
+
+        // CAN response with 2 DTCs: count "02", DTC1 "0300" (P0300), DTC2 "0103" (P0103)
+        List<String> multi = obd.parseDtc("4302030001030000");
+        assertNotNull(multi);
+        assertEquals(2, multi.size());
+        assertEquals("P0300", multi.get(0));
+        assertEquals("P0103", multi.get(1));
     }
 
     @Test
@@ -97,24 +112,65 @@ public class ObdManagerTest {
         m.setAccessible(true);
 
         // Mode 01 PID 0C (RPM): "410C1A20" -> 0x1A20 = 6688 -> 6688 / 4 = 1672 RPM
-        int rawRpm = (Integer) m.invoke(obd, "410C1A20", "410C", 2);
-        assertEquals(0x1A20, rawRpm);
+        long rawRpm = obd.hex("410C1A20", "410C", 2);
+        assertEquals(0x1A20L, rawRpm);
 
         // Mode 01 PID 0D (Speed): "410D3C" -> 0x3C = 60 km/h
-        int rawSpeed = (Integer) m.invoke(obd, "410D3C", "410D", 1);
-        assertEquals(60, rawSpeed);
+        long rawSpeed = obd.hex("410D3C", "410D", 1);
+        assertEquals(60L, rawSpeed);
 
         // Mode 01 PID 05 (Coolant): "410555" -> 0x55 = 85 -> 85 - 40 = 45 °C
-        int rawCoolant = (Integer) m.invoke(obd, "410555", "4105", 1);
-        assertEquals(85, rawCoolant);
+        long rawCoolant = obd.hex("410555", "4105", 1);
+        assertEquals(85L, rawCoolant);
 
         // Prefix not present
-        int notFound = (Integer) m.invoke(obd, "NODATA", "410C", 2);
-        assertEquals(-1, notFound);
+        long notFound = obd.hex("NODATA", "410C", 2);
+        assertEquals(-1L, notFound);
 
         // Incomplete hex
-        int incomplete = (Integer) m.invoke(obd, "410C1", "410C", 2);
-        assertEquals(-1, incomplete);
+        long incomplete = obd.hex("410C1", "410C", 2);
+        assertEquals(-1L, incomplete);
+    }
+
+    @Test
+    public void testHexDecoding_4ByteBitmaskWithMsbSet() {
+        // Standard Honda / Toyota / OBD2 PID 0100 bitmask: "BE3EB811" (MSB = 0xB >= 0x8)
+        // With signed 32-bit Integer.parseInt, this threw NumberFormatException and failed discovery!
+        long sup = obd.hex("4100BE3EB811", "4100", 4);
+        assertEquals(0xBE3EB811L, sup);
+        assertTrue("Value must be non-negative long", sup >= 0);
+        assertTrue("MSB bit 31 must be preserved", (sup & (1L << 31)) != 0);
+
+        // Test PID 0120 with bit 17 (PID 012F fuel level supported)
+        long sup20 = obd.hex("4120BE3EB811", "4120", 4);
+        assertEquals(0xBE3EB811L, sup20);
+        boolean hasFuel = (sup20 & (1L << (32 - (0x2F - 0x20)))) != 0;
+        assertTrue("PID 012F fuel level must be evaluated as supported", hasFuel);
+
+        // Full 32-bit mask 0xFFFFFFFF
+        long fullMask = obd.hex("4100FFFFFFFF", "4100", 4);
+        assertEquals(0xFFFFFFFFL, fullMask);
+        assertTrue(fullMask >= 0);
+    }
+
+    @Test
+    public void testAtrvBatteryRegex() {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile("(\\d+\\.\\d+)");
+
+        java.util.regex.Matcher m1 = p.matcher("12.4V");
+        assertTrue(m1.find());
+        assertEquals(12.4f, Float.parseFloat(m1.group(1)), 0.01f);
+
+        java.util.regex.Matcher m2 = p.matcher("OK14.1V");
+        assertTrue(m2.find());
+        assertEquals(14.1f, Float.parseFloat(m2.group(1)), 0.01f);
+
+        java.util.regex.Matcher m3 = p.matcher("ATRV13.8V\r");
+        assertTrue(m3.find());
+        assertEquals(13.8f, Float.parseFloat(m3.group(1)), 0.01f);
+
+        java.util.regex.Matcher m4 = p.matcher("? NO DATA");
+        assertFalse(m4.find());
     }
 
     // ----------------- Detachment & Send Timeout Tests -----------------

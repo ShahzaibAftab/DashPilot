@@ -44,6 +44,7 @@ public class SpeedometerView extends View {
     private float engineRpm = 750f;
     private float heartbeatPhase = 0f;
     private long lastHeartbeatTime = 0;
+    private boolean running = true;
 
     private final Runnable step = new Runnable() {
         @Override public void run() {
@@ -92,6 +93,25 @@ public class SpeedometerView extends View {
                 startNeedleSweep();
             }
         });
+    }
+
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        running = (visibility == VISIBLE);
+        if (running && heartbeatEnabled) {
+            invalidate();
+        }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        running = false;
+        removeCallbacks(step);
+        if (sweepAnim != null) {
+            sweepAnim.cancel();
+        }
     }
 
     /**
@@ -420,7 +440,7 @@ public class SpeedometerView extends View {
             }
 
             // Keep the heartbeat animating smoothly at ~30 fps
-            if (!animating && !isSweeping) {
+            if (!animating && !isSweeping && isShown() && running) {
                 postInvalidateDelayed(33);
             }
         }

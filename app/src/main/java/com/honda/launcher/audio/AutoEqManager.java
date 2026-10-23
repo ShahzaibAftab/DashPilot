@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.media.audiofx.AudioEffect;
 import android.media.audiofx.Equalizer;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import java.util.ArrayList;
@@ -137,6 +139,7 @@ public final class AutoEqManager implements AutoCloseable {
     private long lastSpectrumApplyMs = 0;
 
     private OnTuningUpdateListener tuningListener;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     public static AutoEqManager get(Context context) {
         if (sInstance == null) {
@@ -628,12 +631,20 @@ public final class AutoEqManager implements AutoCloseable {
     }
 
     private void notifyListenerLocked(boolean force) {
-        if (tuningListener != null) {
+        final OnTuningUpdateListener listener = this.tuningListener;
+        if (listener != null) {
             final Status st = getStatusLocked();
             final String mode = currentDetectedMode;
             if (force || !mode.equals(lastNotifiedMode)) {
                 lastNotifiedMode = mode;
-                tuningListener.onTuningUpdated(st, mode);
+                mainHandler.post(new Runnable() {
+                    @Override public void run() {
+                        OnTuningUpdateListener l = tuningListener;
+                        if (l != null) {
+                            l.onTuningUpdated(st, mode);
+                        }
+                    }
+                });
             }
         }
     }

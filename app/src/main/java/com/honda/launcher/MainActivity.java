@@ -328,6 +328,7 @@ public class MainActivity extends Activity implements LocationListener {
 
     @Override protected void onResume() {
         super.onResume();
+        ReverseCameraMusicManager.clearPendingCallbacks();
         BluetoothAutoEnabler.enableBluetoothIfNeeded(this);
         if (sensorManager != null) sensorManager.start();
         startGps();
@@ -1045,6 +1046,7 @@ public class MainActivity extends Activity implements LocationListener {
 
         AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         boolean isMusicActive = (am != null && am.isMusicActive());
+        ReverseCameraMusicManager.recordActiveMusicVolume(this);
 
         // 1. Try local MediaSession (Spotify, YouTube, media player running on unit)
         String activeTitle = null, activeArtist = null;

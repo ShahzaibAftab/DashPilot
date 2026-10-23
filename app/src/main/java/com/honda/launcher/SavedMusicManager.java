@@ -293,6 +293,10 @@ public class SavedMusicManager {
 
             if (playbackCallback != null) playbackCallback.run();
         } catch (Throwable e) {
+            if (player != null) {
+                try { player.release(); } catch (Throwable ignore) { }
+                player = null;
+            }
             Toast.makeText(context, "Cannot play: " + track.title, Toast.LENGTH_SHORT).show();
             currentlyPlaying = null;
         }
@@ -485,6 +489,9 @@ public class SavedMusicManager {
                 btnDel.setOnClickListener(new View.OnClickListener() {
                     @Override public void onClick(View v) {
                         try {
+                            if (currentlyPlaying != null && currentlyPlaying.file.getAbsolutePath().equals(track.file.getAbsolutePath())) {
+                                stopPlayback();
+                            }
                             if (track.file.delete()) {
                                 listLayout.removeView(row);
                                 Toast.makeText(activity, "Deleted from car memory", Toast.LENGTH_SHORT).show();
@@ -501,7 +508,9 @@ public class SavedMusicManager {
         }
 
         dialog.setView(root);
-        dialog.show();
+        if (!activity.isFinishing()) {
+            try { dialog.show(); } catch (Throwable ignore) { }
+        }
     }
 
     private static GradientDrawable pillDrawable(int color) {

@@ -11,6 +11,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Minimal Bluetooth ELM327 reader (classic SPP). Looks for a PAIRED device whose
@@ -202,14 +204,14 @@ public class ObdManager {
                 // PID 0x00 returns bitmask of PIDs 01-20 support
                 boolean hasFuel = false, hasAtf5C = false, hasAtfB4 = false;
                 String r = send(in, out, "0100", 3000);
-                int sup = hex(r, "4100", 4);
+                long sup = hex(r, "4100", 4);
 
                 // PID 0x20 returns bitmask of PIDs 21-40 support
                 r = send(in, out, "0120", 3000);
                 sup = hex(r, "4120", 4);
                 if (sup >= 0) {
                     // PID 2F = fuel level (bit 17 in the 21-40 bitmask)
-                    hasFuel = (sup & (1 << (32 - (0x2F - 0x20)))) != 0;
+                    hasFuel = (sup & (1L << (32 - (0x2F - 0x20)))) != 0;
                 }
 
                 // PID 0x40 returns bitmask of PIDs 41-60 support
@@ -217,7 +219,7 @@ public class ObdManager {
                 sup = hex(r, "4140", 4);
                 if (sup >= 0) {
                     // PID 5C = oil temp (bit position: 5C - 40 = 28 → bit 32-28=4 from right)
-                    hasAtf5C = (sup & (1 << (32 - (0x5C - 0x40)))) != 0;
+                    hasAtf5C = (sup & (1L << (32 - (0x5C - 0x40)))) != 0;
                 }
 
                 // If 5C not supported, check extended range for non-standard B4
@@ -225,7 +227,7 @@ public class ObdManager {
                     r = send(in, out, "01A0", 3000);
                     sup = hex(r, "41A0", 4);
                     if (sup >= 0) {
-                        hasAtfB4 = (sup & (1 << (32 - (0xB4 - 0xA0)))) != 0;
+                        hasAtfB4 = (sup & (1L << (32 - (0xB4 - 0xA0)))) != 0;
                     }
                 }
 
@@ -238,16 +240,19 @@ public class ObdManager {
                 while (alive(id)) {
                     // ---- Core fast-poll PIDs (always supported) ----
                     r = send(in, out, "010C", 1500);
-                    int v = hex(r, "410C", 2); if (v >= 0) rpm = v / 4;
+                    long v = hex(r, "410C", 2); if (v >= 0) rpm = (int) (v / 4);
                     r = send(in, out, "010D", 1500);
-                    v = hex(r, "410D", 1); if (v >= 0) speed = v;
+                    v = hex(r, "410D", 1); if (v >= 0) speed = (int) v;
                     r = send(in, out, "0105", 1500);
-                    v = hex(r, "4105", 1); if (v >= 0) coolant = v - 40;
+                    v = hex(r, "4105", 1); if (v >= 0) coolant = (int) (v - 40);
                     r = send(in, out, "0104", 1500);
-                    v = hex(r, "4104", 1); if (v >= 0) load = v * 100 / 255;
+                    v = hex(r, "4104", 1); if (v >= 0) load = (int) (v * 100 / 255);
                     r = send(in, out, "ATRV", 1500);
-                    try { volts = Float.parseFloat(r.replace("ATRV", "").replace("V", "")); }
-                    catch (NumberFormatException ignore) { }
+                    Matcher vm = Pattern.compile("(\\d+\\.\\d+)").matcher(r);
+                    if (vm.find()) {
+                        try { volts = Float.parseFloat(vm.group(1)); }
+                        catch (NumberFormatException ignore) { }
+                    }
 
                     // ---- Slow-poll PIDs (every 5th cycle ≈ 2.5 sec) ----
                     if (loopCount % 5 == 0) {
@@ -278,11 +283,11 @@ public class ObdManager {
                         if (hasAtf5C) {
                             r = send(in, out, "015C", 1500);
                             v = hex(r, "415C", 1);
-                            if (v >= 0) atfTemp = v - 40;
+                            if (v >= 0) atfTemp = (int) (v - 40);
                         } else if (hasAtfB4) {
                             r = send(in, out, "01B4", 1500);
                             v = hex(r, "41B4", 1);
-                            if (v >= 0) atfTemp = v - 40;
+                            if (v >= 0) atfTemp = (int) (v - 40);
                         }
                     }
 
@@ -322,7 +327,7 @@ public class ObdManager {
      * Response format: 43 XX YY XX YY ... where each pair of bytes = one code.
      * A code of 0000 means "no more codes".
      */
-    private List<String> parseDtc(String raw) {
+    /* package */ List<String> parseDtc(String raw) {
         List<String> result = new ArrayList<>();
         if (raw.contains("NODATA") || raw.contains("ERROR") || !raw.contains("43")) {
             return result;
@@ -330,6 +335,13 @@ public class ObdManager {
         int idx = raw.indexOf("43");
         if (idx < 0) return result;
         String data = raw.substring(idx + 2);
+
+        // On ISO 15765-4 CAN bus, the response byte immediately following 43 is the number of stored DTCs.
+        // E.g. "430103000000" where "01" is the DTC count, followed by DTC "0300".
+        // In that case data length is 2 + 4 * N (e.g. length % 4 == 2).
+        if (data.length() % 4 == 2) {
+            data = data.substring(2);
+        }
 
         // Each DTC is 4 hex characters (2 bytes)
         for (int i = 0; i + 3 < data.length(); i += 4) {
@@ -396,13 +408,13 @@ public class ObdManager {
         return sb.toString().replace("\r", "").replace("\n", "").replace(" ", "").toUpperCase(Locale.US);
     }
 
-    private int hex(String r, String prefix, int bytes) {
+    /* package */ long hex(String r, String prefix, int bytes) {
         int i = r.indexOf(prefix);
-        if (i < 0) return -1;
+        if (i < 0) return -1L;
         int s = i + prefix.length();
-        if (r.length() < s + bytes * 2) return -1;
-        try { return Integer.parseInt(r.substring(s, s + bytes * 2), 16); }
-        catch (NumberFormatException e) { return -1; }
+        if (r.length() < s + bytes * 2) return -1L;
+        try { return Long.parseLong(r.substring(s, s + bytes * 2), 16); }
+        catch (NumberFormatException e) { return -1L; }
     }
 
     private void closeQuietly(BluetoothSocket s) {

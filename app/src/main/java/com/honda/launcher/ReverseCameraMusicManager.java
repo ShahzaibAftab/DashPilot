@@ -23,6 +23,8 @@ public class ReverseCameraMusicManager {
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
     private static volatile boolean sReverseActive = false;
     private static volatile int sLastKnownMusicVolume = -1;
+    private static volatile boolean sWasPlayingBeforeReverse = false;
+    private static volatile long sLastMusicActiveTimestamp = 0;
 
     public static boolean isKeepMusicInReverseEnabled(Context context) {
         if (context == null) return true;
@@ -46,8 +48,18 @@ public class ReverseCameraMusicManager {
                 if (vol > 0) {
                     sLastKnownMusicVolume = vol;
                 }
+                if (am.isMusicActive()) {
+                    sLastMusicActiveTimestamp = SystemClock.elapsedRealtime();
+                }
             }
         } catch (Throwable ignore) { }
+    }
+
+    /**
+     * Clears all pending delayed unmute/recovery callbacks.
+     */
+    public static void clearPendingCallbacks() {
+        sHandler.removeCallbacksAndMessages(null);
     }
 
     /**
@@ -169,10 +181,20 @@ public class ReverseCameraMusicManager {
      */
     public static void onReverseStateChanged(final Context context, boolean isReverse) {
         sReverseActive = isReverse;
+        sHandler.removeCallbacksAndMessages(null);
         if (!isKeepMusicInReverseEnabled(context)) return;
 
         if (isReverse) {
             Log.i(TAG, "Reverse camera ON: Preserving music playback...");
+            try {
+                AudioManager am = (AudioManager) (context != null ? context.getSystemService(Context.AUDIO_SERVICE) : null);
+                boolean activeNow = (am != null && am.isMusicActive());
+                boolean activeRecently = (SystemClock.elapsedRealtime() - sLastMusicActiveTimestamp < 4000);
+                sWasPlayingBeforeReverse = activeNow || activeRecently;
+            } catch (Throwable ignore) {
+                sWasPlayingBeforeReverse = true;
+            }
+
             applySystemReverseMuteConfig(context, false);
             unmuteAndResumePlayback(context);
 
@@ -225,9 +247,9 @@ public class ReverseCameraMusicManager {
         try {
             PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
             boolean isInteractive = (pm != null && pm.isInteractive());
-            if (isInteractive) {
+            if (isInteractive && (sReverseActive || sWasPlayingBeforeReverse)) {
                 // Screen is still on, meaning an overlay or system window (such as reverse camera) took focus
-                long[] delays = {100, 300, 600, 1000, 1600, 2500, 4000, 6000};
+                long[] delays = {100, 300, 600, 1000, 1600, 2500};
                 for (long d : delays) {
                     sHandler.postDelayed(new Runnable() {
                         @Override public void run() {
@@ -267,7 +289,8 @@ public class ReverseCameraMusicManager {
                 wasPlaying = am.isMusicActive();
 
                 // 3. If music was interrupted/paused by reverse camera, send explicit PLAY
-                if (!wasPlaying) {
+                // but only if music was playing prior to reverse gear engagement
+                if (!wasPlaying && (sWasPlayingBeforeReverse || !sReverseActive)) {
                     long now = SystemClock.uptimeMillis();
                     am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
                     am.dispatchMediaKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PLAY, 0));
@@ -275,8 +298,8 @@ public class ReverseCameraMusicManager {
             }
         } catch (Throwable ignore) { }
 
-        // Only send play intents if audio stopped playing
-        if (!wasPlaying) {
+        // Only send play intents if audio stopped playing and was previously active
+        if (!wasPlaying && (sWasPlayingBeforeReverse || !sReverseActive)) {
             try {
                 Intent mb = new Intent(Intent.ACTION_MEDIA_BUTTON);
                 mb.putExtra(Intent.EXTRA_KEY_EVENT, new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PLAY));
