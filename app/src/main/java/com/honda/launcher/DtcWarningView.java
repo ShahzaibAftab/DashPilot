@@ -107,6 +107,14 @@ public class DtcWarningView extends View {
     public boolean hasCodes() { return hasCodes; }
 
     @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (visibility == VISIBLE && (hasCodes || scanning)) {
+            invalidate();
+        }
+    }
+
+    @Override
     protected void onDraw(Canvas c) {
         float w = getWidth(), h = getHeight();
         if (w <= 0 || h <= 0) return;
@@ -193,7 +201,7 @@ public class DtcWarningView extends View {
 
         c.restore();
 
-        // Keep animating when codes are present or scanning (~12 fps)
-        if (hasCodes || scanning) postInvalidateDelayed(80);
+        // Keep animating when codes are present or scanning (~12 fps) only when shown
+        if ((hasCodes || scanning) && isShown()) postInvalidateDelayed(80);
     }
 }

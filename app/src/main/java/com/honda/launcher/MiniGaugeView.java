@@ -69,7 +69,11 @@ public class MiniGaugeView extends View {
         return danger;
     }
 
-    private float fr(float v) { return Math.max(0f, Math.min(1f, (v - min) / (max - min))); }
+    private float fr(float v) {
+        float denom = max - min;
+        if (denom <= 0f) return 0f;
+        return Math.max(0f, Math.min(1f, (v - min) / denom));
+    }
 
     @Override protected void onDraw(Canvas c) {
         float u = Math.min(getWidth(), getHeight()) / 100f;
