@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+// Every build gets a higher versionCode (minutes since 1970), so a newer APK always installs
+// over an older one. The build time in versionName is shown at the bottom of the settings page.
+def buildTime = new Date()
+def stampFormat = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm")
+stampFormat.setTimeZone(TimeZone.getTimeZone("Asia/Karachi"))
+
 android {
     namespace 'com.honda.launcher'
     compileSdk 34
@@ -10,8 +16,17 @@ android {
         applicationId "com.honda.launcher"
         minSdk 25
         targetSdk 25
-        versionCode 1
-        versionName "0.1"
+        versionCode((buildTime.time / 60000L) as int)
+        versionName "0.2 (" + stampFormat.format(buildTime) + ")"
+    }
+
+    signingConfigs {
+        debug {
+            // GitHub builds sign with the same key as the Mac builds (see .github/workflows/build.yml),
+            // so an APK from GitHub installs over the one already on the car without uninstalling
+            def sharedKeystore = System.getenv("DASHPILOT_DEBUG_KEYSTORE")
+            if (sharedKeystore) storeFile file(sharedKeystore)
+        }
     }
 
     buildTypes {

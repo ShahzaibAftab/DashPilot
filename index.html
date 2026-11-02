@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>DashPilot Car Installer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: radial-gradient(circle at 50% 20%, #1a080c 0%, #08080a 75%);
+      color: #ECEFF1;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(228, 0, 43, 0.18);
+      color: #FF334B;
+      border: 1px solid rgba(228, 0, 43, 0.45);
+      border-radius: 999px;
+      padding: 6px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+    h1 {
+      font-size: 34px;
+      font-weight: 900;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+      background: linear-gradient(135deg, #FFFFFF 0%, #FF8A95 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .subtitle {
+      font-size: 16px;
+      color: #90A4AE;
+      max-width: 500px;
+      margin-bottom: 28px;
+      line-height: 1.4;
+    }
+    .btn-download {
+      display: inline-block;
+      background: linear-gradient(135deg, #E4002B 0%, #B3001E 100%);
+      color: #FFFFFF;
+      text-decoration: none;
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      padding: 20px 42px;
+      border-radius: 14px;
+      box-shadow: 0 10px 30px rgba(228, 0, 43, 0.45), 0 0 1px 1px rgba(255, 255, 255, 0.2) inset;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+      cursor: pointer;
+      border: none;
+      margin-bottom: 24px;
+    }
+    .btn-download:active {
+      transform: scale(0.97);
+      box-shadow: 0 4px 15px rgba(228, 0, 43, 0.6);
+    }
+    .btn-maps {
+      display: inline-block;
+      background: linear-gradient(135deg, #00E5FF 0%, #0091EA 100%);
+      color: #000000;
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      padding: 13px 24px;
+      border-radius: 12px;
+      box-shadow: 0 6px 20px rgba(0, 229, 255, 0.35);
+      transition: transform 0.15s ease;
+      cursor: pointer;
+      margin: 6px 4px;
+    }
+    .btn-maps:active {
+      transform: scale(0.97);
+    }
+    .card {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      padding: 18px 24px;
+      max-width: 480px;
+      width: 100%;
+      text-align: left;
+      margin-bottom: 20px;
+      backdrop-filter: blur(8px);
+    }
+    .card h3 {
+      font-size: 15px;
+      color: #00E5FF;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .card ol {
+      padding-left: 20px;
+      font-size: 14px;
+      color: #CFD8DC;
+      line-height: 1.6;
+    }
+    .card ol li {
+      margin-bottom: 6px;
+    }
+    .meta {
+      font-size: 13px;
+      color: #607D8B;
+      font-family: monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="badge">Type R Edition • Honda City</div>
+  <h1>DashPilot Launcher</h1>
+  <p class="subtitle">Auto Audio Tuning • Engine Heartbeat • Standalone Telemetry • Reverse Camera Continuity</p>
+
+  <a href="app.apk" class="btn-download" download="DashPilot.apk" id="dlBtn">
+    ⚡ DOWNLOAD & INSTALL APK
+  </a>
+
+  <div class="card">
+    <h3 style="color:#00E5FF;">🗺 Google Maps Go (Recommended for 1GB RAM)</h3>
+    <p style="font-size: 13px; color: #B0BEC5; margin-bottom: 12px; line-height: 1.5;">
+      Google Maps Go uses 100x less memory than full Google Maps, loads in under 2 seconds, and runs butter-smooth on your Honda City Allwinner T3 head unit:
+    </p>
+    <div style="text-align: center; margin-top: 6px;">
+      <a href="https://www.google.com/maps" class="btn-maps" target="_blank">
+        🚀 LAUNCH MAPS GO (WEB PWA)
+      </a>
+      <a href="https://play.google.com/store/apps/details?id=com.google.android.apps.mapslite" class="btn-maps" style="background: linear-gradient(135deg, #00E676 0%, #00B248 100%); color: #000;" target="_blank">
+        ⬇ GET MAPS GO (PLAY STORE)
+      </a>
+      <a href="https://play.google.com/store/apps/details?id=com.google.android.apps.navlite" class="btn-maps" style="background: rgba(255,255,255,0.12); color: #FFF; box-shadow: none;" target="_blank">
+        🧭 NAVIGATION FOR MAPS GO
+      </a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 style="color:#FF1744;">▶ YouTube & NewPipe (Ad-Free & Smooth on 1GB RAM)</h3>
+    <p style="font-size: 13px; color: #B0BEC5; margin-bottom: 12px; line-height: 1.5;">
+      On low-power car head units, NewPipe and YouTube Mobile Web run without heavy Google Play Services, giving you instant ad-free 1080p playback without lagging the system:
+    </p>
+    <div style="text-align: center; margin-top: 6px;">
+      <a href="https://m.youtube.com" class="btn-maps" style="background: linear-gradient(135deg, #FF1744 0%, #D50000 100%); color: #FFF;" target="_blank">
+        🚀 LAUNCH YOUTUBE (WEB)
+      </a>
+      <a href="https://newpipe.net/" class="btn-maps" style="background: linear-gradient(135deg, #FF3D00 0%, #DD2C00 100%); color: #FFF;" target="_blank">
+        ⬇ GET NEWPIPE (OFFICIAL APK)
+      </a>
+      <a href="https://play.google.com/store/apps/details?id=com.google.android.youtube" class="btn-maps" style="background: rgba(255,255,255,0.12); color: #FFF; box-shadow: none;" target="_blank">
+        📺 OFFICIAL YOUTUBE (PLAY STORE)
+      </a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Car LCD Installation Steps:</h3>
+    <ol>
+      <li>Tap the red <b>DOWNLOAD</b> button above.</li>
+      <li>When prompted, tap <b>Open</b> or open <b>Downloads / File Manager</b> on your car LCD.</li>
+      <li>Tap <b>DashPilot.apk</b> and select <b>Install</b>.</li>
+      <li>Press the car <b>Home</b> button and select <b>DashPilot</b> &rarr; <b>Always</b>.</li>
+    </ol>
+  </div>
+
+  <div class="meta">
+    Package: com.honda.launcher • Target: Android 7.1+ (Allwinner T3) • File: app.apk (~132 KB)
+  </div>
+
+  <script>
+    // Auto-focus download button for car touchscreens
+    document.getElementById('dlBtn').focus();
+  </script>
+</body>
+</html>

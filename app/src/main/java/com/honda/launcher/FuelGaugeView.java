@@ -111,6 +111,20 @@ public class FuelGaugeView extends View {
     }
 
     @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        if (visibility == VISIBLE && !Float.isNaN(shown) && shown > 0.5f) {
+            invalidate();
+        }
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        super.onDetachedFromWindow();
+        removeCallbacks(step);
+    }
+
+    @Override
     protected void onDraw(Canvas c) {
         float w = getWidth(), h = getHeight();
         if (w <= 0 || h <= 0) return;
@@ -216,7 +230,7 @@ public class FuelGaugeView extends View {
 
         c.restore();
 
-        // Keep animating the wave (~12 fps, gentle on head-unit GPU)
-        if (!Float.isNaN(shown) && shown > 0.5f) postInvalidateDelayed(80);
+        // Keep animating the wave (~12 fps, gentle on head-unit GPU) only when shown
+        if (!Float.isNaN(shown) && shown > 0.5f && isShown()) postInvalidateDelayed(80);
     }
 }
