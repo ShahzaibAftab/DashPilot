@@ -30,6 +30,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -452,6 +453,51 @@ public class MainActivity extends Activity {
 
     private float getEstimatedFuelLevel() {
         return prefs != null ? prefs.getFloat("calibrated_fuel_level", 65.0f) : 65.0f;
+    }
+
+    private void showClearDtcDialog() {
+        if (!obd.connected) {
+            toast("Connect the OBD-II scanner to read or clear fault codes");
+            return;
+        }
+        if (!obd.dtcScanned) {
+            toast("Still reading fault codes from the car, try again in a few seconds");
+            return;
+        }
+        List<String> codes = obd.dtcCodes;
+        String msg = (codes.isEmpty() ? "No stored fault codes." : "Stored fault codes:  " + TextUtils.join("  ", codes))
+                + "\n\nClear them only after the problem is fixed, or the check-engine light will come back."
+                + " Works best with the engine OFF and the ignition ON."
+                + " Clearing also resets the car's emission self-tests.";
+
+        AlertDialog.Builder b = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert);
+        b.setTitle("CHECK ENGINE FAULT CODES");
+        b.setMessage(msg);
+        b.setPositiveButton("CLEAR CODES", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface dialog, int which) {
+                obd.requestClearDtc();
+                toast("Clearing fault codes...");
+                waitForClearDtcResult(SystemClock.elapsedRealtime() + 15000);
+            }
+        });
+        b.setNegativeButton("Cancel", null);
+        b.show();
+    }
+
+    private void waitForClearDtcResult(final long deadline) {
+        h.postDelayed(new Runnable() {
+            public void run() {
+                String result = obd.clearDtcResult;
+                if (result != null) {
+                    Toast.makeText(MainActivity.this, result, Toast.LENGTH_LONG).show();
+                    updateObd();
+                } else if (SystemClock.elapsedRealtime() > deadline) {
+                    toast("No answer from the car. Try again with the ignition ON");
+                } else {
+                    waitForClearDtcResult(deadline);
+                }
+            }
+        }, 500);
     }
 
     private void showFuelCalibrationDialog() {
@@ -2679,6 +2725,12 @@ public class MainActivity extends Activity {
             }
         });
         dtcWarning = new DtcWarningView(this);
+        dtcWarning.setClickable(true);
+        dtcWarning.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showClearDtcDialog();
+            }
+        });
         row3 = new LinearLayout(this);
         row3.setOrientation(LinearLayout.HORIZONTAL);
         row3.addView(gAtf,        lp(0, M, 1f));

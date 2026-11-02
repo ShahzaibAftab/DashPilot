@@ -46,6 +46,10 @@ public class ObdManager {
     public volatile boolean hasAtfSupported;     // true if ECU confirms PID 015C or 01B4
     public volatile boolean pidsDetected;        // true once PID bitmask scan has completed
 
+    private volatile boolean clearDtcRequested;
+    /** Outcome of the last clear-codes request; null while it is still pending. */
+    public volatile String clearDtcResult;
+
     private volatile boolean running;
     private volatile int gen;
     private volatile BluetoothSocket sock;
@@ -64,6 +68,24 @@ public class ObdManager {
         gen++;
         closeQuietly(sock);
         start();
+    }
+
+    /**
+     * Asks the ECU to clear stored fault codes (Mode 04) on the next poll cycle and turn off
+     * the check-engine light. The result appears in {@link #clearDtcResult}.
+     */
+    public void requestClearDtc() {
+        clearDtcResult = null;
+        clearDtcRequested = true;
+    }
+
+    /**
+     * Mode 04 answers "44" when the codes were cleared. ECUs refuse with "7F 04 xx",
+     * typically 7F0422 when the engine is running.
+     */
+    /* package */ static boolean isClearDtcAccepted(String raw) {
+        if (raw == null || raw.contains("7F04")) return false;
+        return raw.contains("44");
     }
 
     public synchronized void onDeviceDisconnected(String address) {
@@ -238,6 +260,20 @@ public class ObdManager {
                 int loopCount = 0;
 
                 while (alive(id)) {
+                    // ---- Clear fault codes when the user asked for it ----
+                    if (clearDtcRequested) {
+                        clearDtcRequested = false;
+                        r = send(in, out, "04", 5000);
+                        boolean cleared = isClearDtcAccepted(r);
+                        // Re-read straight away so the warning shows what the ECU now reports
+                        r = send(in, out, "03", 3000);
+                        dtcCodes = parseDtc(r);
+                        dtcScanned = true;
+                        clearDtcResult = cleared
+                                ? "Fault codes cleared"
+                                : "The car refused to clear the codes. Switch the engine OFF, keep the ignition ON, and try again";
+                    }
+
                     // ---- Core fast-poll PIDs (always supported) ----
                     r = send(in, out, "010C", 1500);
                     long v = hex(r, "410C", 2); if (v >= 0) rpm = (int) (v / 4);
@@ -306,6 +342,10 @@ public class ObdManager {
             } catch (Exception e) {
                 statusMessage = "Disconnected: " + (e.getMessage() != null ? e.getMessage() : "scanner detached");
             } finally {
+                if (clearDtcRequested) {
+                    clearDtcRequested = false;
+                    clearDtcResult = "Scanner disconnected before the codes could be cleared";
+                }
                 connected = false;
                 state = STATE_DISCONNECTED;
                 pidsDetected = false;

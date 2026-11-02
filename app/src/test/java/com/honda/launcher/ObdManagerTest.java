@@ -44,6 +44,30 @@ public class ObdManagerTest {
     }
 
     @Test
+    public void testClearDtcResponse() {
+        // Mode 04 positive response (send() strips spaces and uppercases)
+        assertTrue(ObdManager.isClearDtcAccepted("44"));
+        assertTrue(ObdManager.isClearDtcAccepted("SEARCHING...44"));
+
+        // Refusals: conditions not correct (engine running), no answer, adapter error
+        assertFalse(ObdManager.isClearDtcAccepted("7F0422"));
+        assertFalse(ObdManager.isClearDtcAccepted("NODATA"));
+        assertFalse(ObdManager.isClearDtcAccepted("?"));
+        assertFalse(ObdManager.isClearDtcAccepted(""));
+        assertFalse(ObdManager.isClearDtcAccepted(null));
+
+        // One ECU cleared, another refused: report it as refused
+        assertFalse(ObdManager.isClearDtcAccepted("447F0422"));
+    }
+
+    @Test
+    public void testClearDtcRequestResetsResult() {
+        obd.clearDtcResult = "Fault codes cleared";
+        obd.requestClearDtc();
+        assertNull("Result must read as pending until the ECU answers", obd.clearDtcResult);
+    }
+
+    @Test
     public void testParseDtc_CanBusWithCountPrefix() {
         // ISO 15765-4 CAN Mode 03 response: "43 01 03 00 00 00" (byte 1 = "01" count, byte 2-3 = "0300" DTC P0300)
         List<String> codes = obd.parseDtc("430103000000");
