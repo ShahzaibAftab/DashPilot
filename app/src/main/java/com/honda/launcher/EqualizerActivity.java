@@ -11,7 +11,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.media.audiofx.Equalizer;
-import android.media.audiofx.Visualizer;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -47,10 +46,13 @@ public class EqualizerActivity extends Activity {
     private BandView[] bandViews;
     private TextView[] dbLabels;
     private Bars bars;
-    private Visualizer viz;
     private byte[] fft;
+    private int vizTicks;
+    private boolean askedAudioPermission;
 
-    private TextView tAutoStatus;
+    private TextView tAutoStatus, tLiveSummary;
+    private TextView btnAb, btnRoad, btnLoudness, btnEvenVolume;
+    private LinearLayout optionsRow;
     private TextView btnStrength;
     private Switch swAutoEq;
     private LinearLayout profileRow;
@@ -118,7 +120,7 @@ public class EqualizerActivity extends Activity {
             bandViews[i] = new BandView(this, i, minL, maxL, eq.getBandLevel((short) i), new BandView.Listener() {
                 public void onLevel(int band, int mB) {
                     if (autoEq != null && autoEq.getSettings().enabled) {
-                        autoEq.setEnabled(false);
+                        setAutoEnabled(false);
                         if (swAutoEq != null) swAutoEq.setChecked(false);
                         updateAutoEqUi();
                         Toast.makeText(EqualizerActivity.this, "Switched to Manual EQ", Toast.LENGTH_SHORT).show();
@@ -153,7 +155,7 @@ public class EqualizerActivity extends Activity {
         }
         root.addView(presetsRow, new LinearLayout.LayoutParams(M, W));
 
-        TextView note = text("AutoEQ dynamically adapts frequency bands according to music genre, track energy & vehicle speed.", 12, 0xFF78909C);
+        TextView note = text("AutoEQ adapts to each song's sound, the volume level and road noise. Use A/B to hear the difference.", 12, 0xFF78909C);
         note.setPadding(dp(4), dp(4), 0, 0);
         root.addView(note);
         setContentView(root);
@@ -167,6 +169,7 @@ public class EqualizerActivity extends Activity {
                         if (tAutoStatus != null) {
                             tAutoStatus.setText("● " + tuningDesc);
                         }
+                        updateLiveSummary();
                         if (autoEq != null && autoEq.getSettings().enabled &&
                             status != null && status.currentBandLevelsDb != null && bandViews != null) {
                             for (int i = 0; i < n && i < status.currentBandLevelsDb.length; i++) {
@@ -207,8 +210,10 @@ public class EqualizerActivity extends Activity {
 
         tAutoStatus = text("● Auto: Initializing music analyzer...", 11, 0xFF00E5FF);
         tAutoStatus.setTypeface(Typeface.create("sans-serif-condensed", Typeface.NORMAL));
+        tLiveSummary = text("", 11, 0x8CFFFFFF);
         info.addView(tTitle);
         info.addView(tAutoStatus);
+        info.addView(tLiveSummary);
         topRow.addView(info, new LinearLayout.LayoutParams(0, W, 1f));
 
         // Tuning Strength button
@@ -229,7 +234,7 @@ public class EqualizerActivity extends Activity {
         swAutoEq.setChecked(autoEq.getSettings().enabled);
         swAutoEq.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
-                autoEq.setEnabled(isChecked);
+                setAutoEnabled(isChecked);
                 updateAutoEqUi();
                 Toast.makeText(EqualizerActivity.this,
                         isChecked ? "Auto Audio Tuning enabled" : "Manual Equalizer enabled",
@@ -265,7 +270,7 @@ public class EqualizerActivity extends Activity {
             btn.setOnClickListener(new View.OnClickListener() {
                 @Override public void onClick(View v) {
                     if (!autoEq.getSettings().enabled) {
-                        autoEq.setEnabled(true);
+                        setAutoEnabled(true);
                         swAutoEq.setChecked(true);
                     }
                     autoEq.setProfile(p);
@@ -279,7 +284,86 @@ public class EqualizerActivity extends Activity {
         }
         card.addView(profileRow);
 
+        // Options: A/B comparison, road noise, volume-aware loudness, song level matching
+        optionsRow = new LinearLayout(this);
+        optionsRow.setOrientation(LinearLayout.HORIZONTAL);
+        optionsRow.setPadding(0, dp(6), 0, 0);
+        btnAb = optionButton(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (autoEq.isBypassed()) {
+                    endAbCompare();
+                } else {
+                    autoEq.setBypass(true);
+                    h.postDelayed(endAbRunnable, AB_COMPARE_MS);
+                    Toast.makeText(EqualizerActivity.this,
+                            "Original sound. If nothing changes, this unit's audio does not pass through the equalizer",
+                            Toast.LENGTH_LONG).show();
+                }
+                updateAutoEqUi();
+            }
+        });
+        btnRoad = optionButton(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                int next = (autoEq.getSettings().speedCompLevel + 1) % 3;
+                autoEq.setSpeedCompLevel(next);
+                updateAutoEqUi();
+            }
+        });
+        btnLoudness = optionButton(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                autoEq.setLoudnessCompensation(!autoEq.getSettings().loudnessCompensation);
+                updateAutoEqUi();
+            }
+        });
+        btnEvenVolume = optionButton(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                autoEq.setLevelMatching(!autoEq.getSettings().levelMatching);
+                updateAutoEqUi();
+            }
+        });
+        card.addView(optionsRow);
+
         return card;
+    }
+
+    private static final long AB_COMPARE_MS = 20_000;
+
+    private final Runnable endAbRunnable = new Runnable() {
+        @Override public void run() {
+            endAbCompare();
+            updateAutoEqUi();
+        }
+    };
+
+    /** Back to the tuned sound; A/B never stays on by accident. */
+    private void endAbCompare() {
+        h.removeCallbacks(endAbRunnable);
+        if (autoEq != null && autoEq.isBypassed()) autoEq.setBypass(false);
+    }
+
+    private TextView optionButton(View.OnClickListener l) {
+        TextView btn = text("", 11, 0xFFFFFFFF);
+        btn.setGravity(Gravity.CENTER);
+        btn.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        btn.setPadding(dp(4), dp(4), dp(4), dp(4));
+        btn.setOnClickListener(l);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(30), 1f);
+        lp.setMargins(dp(2), 0, dp(2), 0);
+        optionsRow.addView(btn, lp);
+        return btn;
+    }
+
+    /**
+     * The settings page's AUTO AUDIO TUNING switch reads "auto_eq_enabled" at every start, so
+     * keep it in step; otherwise Manual mode chosen here was undone on the next start.
+     */
+    private void setAutoEnabled(boolean on) {
+        autoEq.setEnabled(on);
+        getSharedPreferences("launcher", MODE_PRIVATE).edit().putBoolean("auto_eq_enabled", on).apply();
+    }
+
+    private void updateLiveSummary() {
+        if (tLiveSummary != null && autoEq != null) tLiveSummary.setText(autoEq.getLiveSummary());
     }
 
     private void updateAutoEqUi() {
@@ -319,13 +403,34 @@ public class EqualizerActivity extends Activity {
             for (int i = 0; i < profileButtons.length && i < profiles.length; i++) {
                 boolean active = (enabled && profiles[i] == curProfile);
                 profileButtons[i].setBackground(shape(active ? RED : 0x22FFFFFF));
-                profileButtons[i].setTextColor(active ? 0xFFFFFFFF : 0xB0BEC5);
+                profileButtons[i].setTextColor(active ? 0xFFFFFFFF : 0xFFB0BEC5);
             }
         }
 
         if (presetsRow != null) {
             presetsRow.setAlpha(enabled ? 0.45f : 1.0f);
         }
+
+        if (optionsRow != null) {
+            AutoEqManager.Settings st = autoEq.getSettings();
+            boolean ab = autoEq.isBypassed();
+            btnAb.setText(ab ? "A/B: ORIGINAL (TAP TO END)" : "A/B: HEAR ORIGINAL");
+            btnAb.setBackground(shape(ab ? 0xFFFFB300 : 0x22FFFFFF));
+            btnAb.setTextColor(ab ? 0xFF000000 : 0xFFFFFFFF);
+            final String[] road = {"OFF", "LOW", "HIGH"};
+            styleOption(btnRoad, "ROAD NOISE: " + road[st.speedCompLevel], st.speedCompLevel > 0, enabled);
+            styleOption(btnLoudness, "VOLUME BASS: " + (st.loudnessCompensation ? "ON" : "OFF"), st.loudnessCompensation, enabled);
+            styleOption(btnEvenVolume, "EVEN SONG VOLUME: " + (st.levelMatching ? "ON" : "OFF"), st.levelMatching, enabled);
+        }
+        updateLiveSummary();
+    }
+
+    /** Auto-only options are dimmed in Manual mode; their settings still apply once Auto is on. */
+    private void styleOption(TextView btn, String label, boolean on, boolean autoEnabled) {
+        btn.setText(label);
+        btn.setBackground(shape(on ? 0x66E4002B : 0x22FFFFFF));
+        btn.setTextColor(on ? 0xFFFFFFFF : 0xFFB0BEC5);
+        btn.setAlpha(autoEnabled ? 1f : 0.45f);
     }
 
     private void cycleStrength() {
@@ -372,7 +477,7 @@ public class EqualizerActivity extends Activity {
 
     private void applyPreset(int idx) {
         if (autoEq != null && autoEq.getSettings().enabled) {
-            autoEq.setEnabled(false);
+            setAutoEnabled(false);
             if (swAutoEq != null) swAutoEq.setChecked(false);
             updateAutoEqUi();
         }
@@ -387,42 +492,35 @@ public class EqualizerActivity extends Activity {
     }
 
     // ---------------- live level display & spectrum analysis ----------------
+    // The spectrum comes from AutoEqManager's analyzer, which also runs the live tuning
     private final Runnable vizTick = new Runnable() {
         @Override public void run() {
-            if (viz == null) return;
             try {
-                viz.getFft(fft);
-                bars.setFft(fft);
-                if (autoEq != null && autoEq.getSettings().enabled) {
-                    autoEq.analyzeSpectrum(fft);
+                if (fft == null || fft.length == 0) {
+                    int size = autoEq.getCaptureSize();
+                    if (size > 0) fft = new byte[size];
                 }
+                if (fft != null && fft.length > 0 && autoEq.captureFft(fft)) bars.setFft(fft);
             } catch (Throwable ignore) { }
+            if (vizTicks++ % 10 == 0) updateLiveSummary();
             h.postDelayed(this, 100);
         }
     };
 
     private void startViz() {
-        if (bars == null) return;
-        if (Build.VERSION.SDK_INT >= 23
-                && checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        if (bars == null || autoEq == null) return;
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+                && !askedAudioPermission) {
+            // Ask once per visit: asking again from the result callback looped on "Deny"
+            askedAudioPermission = true;
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 2);
-            return;
         }
-        try {
-            viz = new Visualizer(0);
-            viz.setCaptureSize(Visualizer.getCaptureSizeRange()[0]);
-            viz.setEnabled(true);
-            fft = new byte[viz.getCaptureSize()];
-            h.post(vizTick);
-        } catch (Throwable t) { viz = null; }
+        h.removeCallbacks(vizTick);
+        h.post(vizTick);
     }
 
     private void stopViz() {
         h.removeCallbacks(vizTick);
-        if (viz != null) {
-            try { viz.setEnabled(false); viz.release(); } catch (Throwable ignore) { }
-            viz = null;
-        }
     }
 
     @Override protected void onResume() {
@@ -434,6 +532,7 @@ public class EqualizerActivity extends Activity {
     @Override protected void onPause() {
         super.onPause();
         stopViz();
+        endAbCompare();
     }
 
     @Override protected void onDestroy() {
@@ -443,7 +542,10 @@ public class EqualizerActivity extends Activity {
         }
     }
 
-    @Override public void onRequestPermissionsResult(int rc, String[] p, int[] r) { startViz(); }
+    @Override public void onRequestPermissionsResult(int rc, String[] p, int[] r) {
+        fft = null;   // the analyzer can start now; pick up its capture size
+        updateLiveSummary();
+    }
 
     // ---------------- views ----------------
     static class BandView extends View {

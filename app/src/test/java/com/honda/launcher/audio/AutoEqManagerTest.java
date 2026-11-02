@@ -10,8 +10,8 @@ import static org.junit.Assert.*;
  * 1. Default settings initialization and copy functionality.
  * 2. Parameter clamping & sanitization (strength, dB values, NaN/Infinity safety).
  * 3. Dynamic genre & track title/artist acoustic evaluation.
- * 4. Live spectrum energy balance logic (low vs mid vs high dominance).
- * 5. Road noise speed compensation calculations.
+ * 4. Live tonal-balance corrections, whole-word genre cues and the car-tuned AUTO curve.
+ * 5. Road noise levels, volume-aware loudness and gliding changes.
  */
 public class AutoEqManagerTest {
 
@@ -47,51 +47,145 @@ public class AutoEqManagerTest {
     public void testEvaluateDynamicMusicTarget_GenreKeywords() {
         // EDM / Club / Bass
         AutoEqManager.DynamicTarget edm = AutoEqManager.evaluateDynamicMusicTarget(
-                "Midnight Club Remix", "DJ Tiesto", 0.5f, 0.5f, 0.5f, 0f);
+                "Midnight Club Remix", "DJ Tiesto", null);
         assertTrue(edm.description.contains("Bass"));
         assertTrue(edm.bassDb > 2.0f);
 
         // Rock / Metal
         AutoEqManager.DynamicTarget rock = AutoEqManager.evaluateDynamicMusicTarget(
-                "Back in Black", "AC/DC", 0.5f, 0.5f, 0.5f, 0f);
+                "Back in Black", "AC/DC", null);
         assertTrue(rock.description.contains("Rock"));
         assertTrue(rock.midDb > 0.5f);
 
         // Vocal / Acoustic / Coke Studio
         AutoEqManager.DynamicTarget vocal = AutoEqManager.evaluateDynamicMusicTarget(
-                "Pasoori (Coke Studio)", "Ali Sethi", 0.5f, 0.5f, 0.5f, 0f);
+                "Pasoori (Coke Studio)", "Ali Sethi", null);
         assertTrue(vocal.description.contains("Vocal"));
         assertTrue(vocal.midDb >= 3.0f);
 
         // Podcast / Speech
         AutoEqManager.DynamicTarget speech = AutoEqManager.evaluateDynamicMusicTarget(
-                "Daily News Podcast Episode 42", "Host", 0.5f, 0.5f, 0.5f, 0f);
+                "Daily News Podcast Episode 42", "Host", null);
         assertTrue(speech.description.contains("Voice") || speech.description.contains("Speech"));
         assertTrue(speech.bassDb < 0f); // Cuts rumble
     }
 
     @Test
-    public void testEvaluateDynamicMusicTarget_SpectrumFallback() {
-        // High bass energy in live FFT
-        AutoEqManager.DynamicTarget heavyBass = AutoEqManager.evaluateDynamicMusicTarget(
-                "Unknown Song", "Unknown Artist", 1.8f, 0.4f, 0.4f, 0f);
-        assertTrue(heavyBass.description.contains("Balance") || heavyBass.description.contains("Deep"));
+    public void testEvaluateDynamicMusicTarget_LiveBalance() {
+        // Thin recording (little bass): AUTO adds bass beyond the neutral starting point
+        AutoEqManager.DynamicTarget thin = AutoEqManager.evaluateDynamicMusicTarget(
+                "Track 01", "Artist", new SpectrumBalance(-2f, -9f));
+        assertTrue(thin.bassDb > 1.8f + 2f);
+        assertTrue(thin.description.contains("adding bass"));
 
-        // Mid-dominant acoustic energy
-        AutoEqManager.DynamicTarget vocalHeavy = AutoEqManager.evaluateDynamicMusicTarget(
-                "Track 01", "Artist", 0.2f, 1.2f, 0.3f, 0f);
-        assertTrue(vocalHeavy.description.contains("Vocal") || vocalHeavy.description.contains("Warm"));
+        // Bass-heavy recording: AUTO eases the bass instead of boosting it further
+        AutoEqManager.DynamicTarget heavy = AutoEqManager.evaluateDynamicMusicTarget(
+                "Track 02", "Artist", new SpectrumBalance(14f, -9f));
+        assertTrue(heavy.bassDb < 0f);
+        assertTrue(heavy.description.contains("heavy bass"));
 
-        // Treble-dominant bright track
+        // Harsh, bright recording: treble is smoothed
         AutoEqManager.DynamicTarget bright = AutoEqManager.evaluateDynamicMusicTarget(
-                "Audio", "Soloist", 0.3f, 0.4f, 1.3f, 0f);
-        assertTrue(bright.description.contains("Smooth") || bright.description.contains("Fidelity"));
+                "Track 03", "Artist", new SpectrumBalance(6f, 0f));
+        assertTrue(bright.trebleDb < 0f);
+        assertTrue(bright.description.contains("harsh highs"));
+
+        // Already at the target balance: no correction on top of the neutral curve
+        AutoEqManager.DynamicTarget onTarget = AutoEqManager.evaluateDynamicMusicTarget(
+                "Track 04", "Artist", new SpectrumBalance(SpectrumBalance.TARGET_BASS_TILT_DB,
+                        SpectrumBalance.TARGET_TREBLE_TILT_DB));
+        assertEquals(1.8f, onTarget.bassDb, 0.001f);
+        assertEquals(1.5f, onTarget.trebleDb, 0.001f);
+    }
+
+    @Test
+    public void testGenreCuesMatchWholeWordsOnly() {
+        String neutral = "Auto: Type R Balanced Stage";
+        // "Oliver" contains "live", "Beatles" contains "beat", "Radio Ga Ga" / "voice" were speech cues
+        assertEquals(neutral, AutoEqManager.evaluateDynamicMusicTarget("Oliver Twist", "Unknown", null).description);
+        assertEquals(neutral, AutoEqManager.evaluateDynamicMusicTarget("Hey Jude", "The Beatles", null).description);
+        assertEquals(neutral, AutoEqManager.evaluateDynamicMusicTarget("Radio Ga Ga", "Queen", null).description);
+        assertEquals(neutral, AutoEqManager.evaluateDynamicMusicTarget("Teri Voice", "Unknown", null).description);
+        // "rapture" is not "rap", "popcorn" is not "pop"
+        assertEquals(neutral, AutoEqManager.evaluateDynamicMusicTarget("Rapture", "Popcorn", null).description);
+
+        // Real cues still match, including hyphenated and symbol forms
+        assertTrue(AutoEqManager.evaluateDynamicMusicTarget("Hip-Hop Mix", "x", null).description.contains("Club"));
+        assertTrue(AutoEqManager.evaluateDynamicMusicTarget("Smooth", "R&B Hits", null).description.contains("Pop"));
+    }
+
+    @Test
+    public void testCarTunedAutoCurve() {
+        // 5-band EQ: 60 Hz gets the bass, 230 Hz is trimmed for cabin boom, 3.6 kHz gets vocal presence
+        assertEquals(3f, AutoEqManager.getDynamicBandDb(60, 3f, 2f, 1f), 0.001f);
+        assertTrue(AutoEqManager.getDynamicBandDb(230, 3f, 2f, 1f) < 0.5f);
+        assertEquals(1f, AutoEqManager.getDynamicBandDb(910, 3f, 2f, 1f), 0.001f);
+        assertEquals(2f, AutoEqManager.getDynamicBandDb(3600, 3f, 2f, 1f), 0.001f);
+        assertEquals(1f, AutoEqManager.getDynamicBandDb(14000, 3f, 2f, 1f), 0.001f);
+    }
+
+    @Test
+    public void testVolumeAwareLoudness() {
+        float[] quiet = AutoEqManager.loudnessContour(0.1f);
+        assertTrue("Low volume adds bass", quiet[0] > 2f);
+        assertTrue("Low volume adds treble", quiet[1] > 1f);
+
+        float[] normal = AutoEqManager.loudnessContour(0.6f);
+        assertEquals(0f, normal[0], 0.001f);
+        assertEquals(0f, normal[1], 0.001f);
+
+        float[] loud = AutoEqManager.loudnessContour(1.0f);
+        assertEquals("Full volume eases bass to spare the speakers", -2.5f, loud[0], 0.001f);
+
+        // Out-of-range input is clamped
+        assertEquals(3.0f, AutoEqManager.loudnessContour(-1f)[0], 0.001f);
+    }
+
+    @Test
+    public void testRoadNoiseLevels() {
+        assertEquals(0f, AutoEqManager.speedGainDb(100f, AutoEqManager.SPEED_COMP_OFF), 0.001f);
+        assertEquals(0f, AutoEqManager.speedGainDb(25f, AutoEqManager.SPEED_COMP_HIGH), 0.001f);
+        assertEquals(2f, AutoEqManager.speedGainDb(120f, AutoEqManager.SPEED_COMP_LOW), 0.001f);
+        assertEquals(4f, AutoEqManager.speedGainDb(150f, AutoEqManager.SPEED_COMP_HIGH), 0.001f);
+        assertEquals(1f, AutoEqManager.speedGainDb(75f, AutoEqManager.SPEED_COMP_LOW), 0.001f);
+
+        assertEquals(2.0f, AutoEqManager.speedBassDb(120f, AutoEqManager.SPEED_COMP_LOW), 0.01f);
+        assertEquals(2.8f, AutoEqManager.speedBassDb(120f, AutoEqManager.SPEED_COMP_HIGH), 0.01f);
+        assertEquals(0f, AutoEqManager.speedBassDb(120f, AutoEqManager.SPEED_COMP_OFF), 0.001f);
+    }
+
+    @Test
+    public void testChangesGlideInSteps() {
+        assertEquals(0.25f, AutoEqManager.stepToward(0f, 3f, AutoEqManager.RAMP_STEP_DB), 0.0001f);
+        assertEquals(-0.25f, AutoEqManager.stepToward(0f, -3f, AutoEqManager.RAMP_STEP_DB), 0.0001f);
+        assertEquals("Lands exactly on the target", 3f, AutoEqManager.stepToward(2.9f, 3f, AutoEqManager.RAMP_STEP_DB), 0.0001f);
+
+        // A 3 dB profile change takes 12 steps of 100 ms
+        float v = 0f;
+        int steps = 0;
+        while (v != 3f) { v = AutoEqManager.stepToward(v, 3f, AutoEqManager.RAMP_STEP_DB); steps++; }
+        assertEquals(12, steps);
+    }
+
+    @Test
+    public void testSpeedCompLevelSanitized() {
+        AutoEqManager.Settings s = new AutoEqManager.Settings();
+        assertEquals(AutoEqManager.SPEED_COMP_LOW, s.speedCompLevel);
+        assertTrue(s.levelMatching);
+        assertTrue(s.loudnessCompensation);
+
+        s.speedCompLevel = 7;
+        AutoEqManager.Settings clean = AutoEqManager.sanitize(s);
+        assertEquals(AutoEqManager.SPEED_COMP_HIGH, clean.speedCompLevel);
+        assertTrue(clean.speedCompensation);
+
+        s.speedCompLevel = AutoEqManager.SPEED_COMP_OFF;
+        assertFalse("The legacy flag follows the level", AutoEqManager.sanitize(s).speedCompensation);
     }
 
     @Test
     public void testNullSafety() {
-        AutoEqManager.DynamicTarget dt = AutoEqManager.evaluateDynamicMusicTarget(
-                null, null, 0f, 0f, 0f, 0f);
+        AutoEqManager.DynamicTarget dt = AutoEqManager.evaluateDynamicMusicTarget(null, null, null);
         assertNotNull(dt);
         assertNotNull(dt.description);
 
@@ -174,17 +268,17 @@ public class AutoEqManagerTest {
     public void testSpecialCharactersAndUnicodeMetadata() {
         // Emojis and remix keywords
         AutoEqManager.DynamicTarget edmEmoji = AutoEqManager.evaluateDynamicMusicTarget(
-                "🔥 Ultra Bass Remix 🎧", "DJ Snake", 0.5f, 0.5f, 0.5f, 0f);
+                "🔥 Ultra Bass Remix 🎧", "DJ Snake", null);
         assertTrue(edmEmoji.description.contains("Bass") || edmEmoji.description.contains("Club"));
 
         // Urdu / Coke Studio
         AutoEqManager.DynamicTarget cokeStudio = AutoEqManager.evaluateDynamicMusicTarget(
-                "کوک اسٹوڈیو (Coke Studio)", "Abida Parveen", 0.5f, 0.5f, 0.5f, 0f);
+                "کوک اسٹوڈیو (Coke Studio)", "Abida Parveen", null);
         assertTrue(cokeStudio.description.contains("Vocal"));
 
         // Mixed case with leading/trailing spaces
         AutoEqManager.DynamicTarget rockSpaced = AutoEqManager.evaluateDynamicMusicTarget(
-                "   THUNDERSTRUCK   ", "   ac/dc   ", 0.5f, 0.5f, 0.5f, 0f);
+                "   THUNDERSTRUCK   ", "   ac/dc   ", null);
         assertTrue(rockSpaced.description.contains("Rock"));
     }
 }

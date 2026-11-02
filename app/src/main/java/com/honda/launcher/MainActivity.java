@@ -1106,6 +1106,11 @@ public class MainActivity extends Activity {
             SavedMusicManager.Track cur = sm.getCurrentlyPlaying();
             String title = (cur != null) ? cur.getDisplayName() : "Car Memory Music";
             nowPlaying.setText("▶ " + title);
+            // Lets Auto Audio Tuning see song changes and genre words for Car Memory songs too
+            try {
+                com.honda.launcher.audio.AutoEqManager.get(this).updateTrackMetadata(
+                        cur != null ? cur.title : title, cur != null ? cur.artist : "");
+            } catch (Throwable ignore) { }
             updateDownloadButtonUi(cur != null ? cur.title : "", cur != null ? cur.artist : "", true, deviceConnected);
             return;
         }

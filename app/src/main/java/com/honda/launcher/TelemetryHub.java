@@ -101,6 +101,7 @@ final class TelemetryHub implements LocationListener {
                 obd.stop();
                 stopGps();
                 saveFuel();
+                try { com.honda.launcher.audio.AutoEqManager.get(app).stopAnalysis(); } catch (Throwable ignore) { }
             } else {
                 screenOn = true;
                 obd.start();
@@ -119,9 +120,12 @@ final class TelemetryHub implements LocationListener {
             }
             lastLoopAt = now;
 
-            if (loops % 2 == 0) {
-                try { com.honda.launcher.audio.AutoEqManager.get(app).setVehicleSpeed(s); } catch (Throwable ignore) { }
-            }
+            try {
+                com.honda.launcher.audio.AutoEqManager autoEq = com.honda.launcher.audio.AutoEqManager.get(app);
+                if (loops % 2 == 0) autoEq.setVehicleSpeed(s);
+                // Auto Audio Tuning follows the volume and measures the music once a second
+                if (screenOn) autoEq.onTick();
+            } catch (Throwable ignore) { }
             loops++;
             h.postDelayed(this, LOOP_MS);
         }
