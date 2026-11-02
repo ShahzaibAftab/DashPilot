@@ -48,7 +48,11 @@ public class SpeedometerView extends View {
 
     private final Runnable step = new Runnable() {
         @Override public void run() {
-            if (isSweeping) return;
+            if (isSweeping) {
+                // The sweep owns the needle; it restarts this loop when it ends
+                animating = false;
+                return;
+            }
             long now = SystemClock.uptimeMillis();
             if (lastFrameTime == 0) lastFrameTime = now;
             float dt = (now - lastFrameTime) / 1000f;
@@ -108,10 +112,11 @@ public class SpeedometerView extends View {
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
         running = false;
-        removeCallbacks(step);
         if (sweepAnim != null) {
             sweepAnim.cancel();
         }
+        removeCallbacks(step);
+        animating = false;
     }
 
     /**
@@ -145,12 +150,13 @@ public class SpeedometerView extends View {
         sweepAnim.addListener(new AnimatorListenerAdapter() {
             @Override public void onAnimationEnd(Animator animation) {
                 isSweeping = false;
-                shown = target;
+                // Hand the needle back to the live speed: glide from where the sweep
+                // stopped to the current target. Always restart the loop, because a step
+                // that was queued when the sweep began bailed out without reposting.
+                removeCallbacks(step);
+                animating = true;
                 lastFrameTime = 0;
-                if (!animating && Math.abs(target - shown) > 0.08f) {
-                    animating = true;
-                    postOnAnimation(step);
-                }
+                postOnAnimation(step);
                 invalidate();
             }
         });
