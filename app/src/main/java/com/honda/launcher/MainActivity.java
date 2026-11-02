@@ -18,9 +18,6 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
-import android.location.Location;
-import android.location.LocationListener;
-import android.location.LocationManager;
 import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaController;
@@ -54,7 +51,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-public class MainActivity extends Activity implements LocationListener {
+public class MainActivity extends Activity {
 
     // ===================== CONFIG =====================
     static final int RED = 0xFFE4002B;
@@ -109,7 +106,8 @@ public class MainActivity extends Activity implements LocationListener {
     private MiniGaugeView gRpm, gTemp, gBatt, gLoad, gAtf;
     private FuelGaugeView fuelGauge;
     private DtcWarningView dtcWarning;
-    private final ObdManager obd = new ObdManager();
+    private TelemetryHub telemetry;   // OBD, GPS and fuel tracking; keeps running in the background
+    private ObdManager obd;
     private MediaController controller;
     private SharedPreferences prefs;
     private boolean needsAccess;
@@ -128,15 +126,10 @@ public class MainActivity extends Activity implements LocationListener {
     private String btTrack = null, btArtist = null;
     private String currentPlayingTitle = null, currentPlayingArtist = null;
 
-    private volatile float gpsSpeed;
-    private volatile long lastGps;
     private float curSpeed, downX, downY;
     private int ticks;
 
     private VehicleSensorManager sensorManager;
-    private Location lastLocation;
-    private long lastLocationTime = 0;
-    private long lastDistanceCalcTime = 0;
 
     // 0-100 timer
     private int tState;
@@ -244,6 +237,8 @@ public class MainActivity extends Activity implements LocationListener {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = getSharedPreferences("launcher", MODE_PRIVATE);
+        telemetry = TelemetryHub.get(this);
+        obd = telemetry.obd;
         sensorManager = new VehicleSensorManager(this);
 
         // Pre-configure system reverse mute settings to keep music unmuted
@@ -269,7 +264,7 @@ public class MainActivity extends Activity implements LocationListener {
                     "com.microntek.screen.on".equals(act)) {
                     BluetoothAutoEnabler.enableBluetoothIfNeeded(MainActivity.this);
                     if (sensorManager != null) sensorManager.start();
-                    startGps();
+                    telemetry.startGps();
                     if (obd != null && obd.autoConnect) obd.reconnectNow();
                     updateObdStatusCard();
                 }
@@ -297,12 +292,9 @@ public class MainActivity extends Activity implements LocationListener {
         sf.addAction("com.car.reverse.state");
         try { registerReceiver(screenReceiver, sf); } catch (Exception ignore) { }
 
-        // Load manually selected OBD-II device if saved
-        String savedMac = prefs.getString("obd_mac", null);
-        if (savedMac != null && !savedMac.isEmpty()) {
-            obd.manualDeviceAddress = savedMac;
-        }
-        obd.autoConnect = prefs.getBoolean("auto_obd_connect", true);
+        // Keeps OBD, GPS and fuel tracking alive while Maps / YouTube are on screen.
+        // The hub loads the saved OBD-II device and auto-connect setting itself.
+        TelemetryService.start(this);
 
         buildUi();
         applyGaugeToggles();
@@ -317,8 +309,8 @@ public class MainActivity extends Activity implements LocationListener {
             }, 300);
         }
 
-        if (Build.VERSION.SDK_INT >= 23 && !hasLoc()) {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
+        if (!telemetry.hasLocationPermission()) {
+            requestLocationPermission();
         }
     }
 
@@ -328,9 +320,8 @@ public class MainActivity extends Activity implements LocationListener {
         updateReverseStatus();
         BluetoothAutoEnabler.enableBluetoothIfNeeded(this);
         if (sensorManager != null) sensorManager.start();
-        startGps();
         obd.autoConnect = prefs.getBoolean("auto_obd_connect", true);
-        obd.start();
+        telemetry.start();   // already running in the background; restarts OBD if its thread died
         h.post(tick);
 
         IntentFilter f = new IntentFilter();
@@ -374,9 +365,7 @@ public class MainActivity extends Activity implements LocationListener {
         ReverseCameraMusicManager.onActivityPaused(this);
         h.removeCallbacks(tick);
         if (sensorManager != null) sensorManager.stop();
-        obd.stop();
-        try { ((LocationManager) getSystemService(LOCATION_SERVICE)).removeUpdates(this); }
-        catch (Exception ignore) { }
+        // OBD and GPS keep running in TelemetryHub while other apps are on screen
         try { unregisterReceiver(btMusicReceiver); }
         catch (Exception ignore) { }
     }
@@ -401,7 +390,10 @@ public class MainActivity extends Activity implements LocationListener {
         if (curPage != 0) goToPage(0, false);
     }
 
-    @Override public void onRequestPermissionsResult(int rc, String[] p, int[] r) { startGps(); }
+    @Override public void onRequestPermissionsResult(int rc, String[] p, int[] r) {
+        telemetry.startGps();
+        updateSpeedSource();
+    }
 
     @Override public void onBackPressed() {
         if (curPage == 2) goToPage(1, true);
@@ -437,53 +429,26 @@ public class MainActivity extends Activity implements LocationListener {
     // ---------------------------- loop ----------------------------
     private final Runnable tick = new Runnable() {
         @Override public void run() {
-            // Prioritize OBD wheel speed if connected, else fresh GPS speed
-            float s;
-            if (obd.connected && obd.speed >= 0) {
-                s = obd.speed;
-            } else if (SystemClock.elapsedRealtime() - lastGps < 5000) {
-                s = gpsSpeed;
-            } else {
-                s = 0f;
-            }
+            // OBD wheel speed if connected, else fresh GPS speed (fuel tracking and
+            // Auto EQ speed run in TelemetryHub so they continue in the background)
+            float s = telemetry.currentSpeed();
             curSpeed = s;
             speedo.setSpeed(s);
             timerStep(s);
-
-            long now = SystemClock.elapsedRealtime();
-            if (lastDistanceCalcTime > 0 && s > 1.0f) {
-                float dtSec = (now - lastDistanceCalcTime) / 1000f;
-                if (dtSec > 0 && dtSec < 5f) {
-                    float distInc = (s / 3600f) * dtSec;
-                    trackFuelConsumption(distInc);
-                }
-            }
-            lastDistanceCalcTime = now;
 
             if (sensorManager != null) {
                 sensorManager.updateKinematics(s);
             }
             if (ticks % 2 == 0) updateObd();
-            if (ticks % 4 == 0) updateClock();
-            if (ticks % 6 == 0) updateNowPlaying();
-            if (ticks % 8 == 0) {
-                try { com.honda.launcher.audio.AutoEqManager.get(MainActivity.this).setVehicleSpeed(s); } catch (Throwable ignore) { }
+            if (ticks % 4 == 0) {
+                updateClock();
+                updateSpeedSource();
             }
+            if (ticks % 6 == 0) updateNowPlaying();
             ticks++;
             h.postDelayed(this, 250);
         }
     };
-
-    private void trackFuelConsumption(float kmDriven) {
-        if (kmDriven <= 0) return;
-        // Honda City 1.3/1.5: 40L tank, ~7.5 L / 100km -> 0.075 L/km -> ~0.1875% of tank per km
-        float currentCal = prefs != null ? prefs.getFloat("calibrated_fuel_level", 65.0f) : 65.0f;
-        float fuelUsedPct = kmDriven * 0.1875f;
-        float newFuel = Math.max(2.0f, currentCal - fuelUsedPct);
-        if (prefs != null) {
-            prefs.edit().putFloat("calibrated_fuel_level", newFuel).apply();
-        }
-    }
 
     private float getEstimatedFuelLevel() {
         return prefs != null ? prefs.getFloat("calibrated_fuel_level", 65.0f) : 65.0f;
@@ -1212,79 +1177,60 @@ public class MainActivity extends Activity implements LocationListener {
     }
 
     // ---------------------------- GPS ----------------------------
-    private boolean hasLoc() {
-        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    // GPS itself runs in TelemetryHub; this shows its state on the speedometer and lets a
+    // tap on the dial fix a missing permission or a switched-off Location setting.
+
+    private void requestLocationPermission() {
+        prefs.edit().putBoolean("location_permission_asked", true).apply();
+        requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
     }
 
-    private void startGps() {
-        if (!hasLoc()) return;
-        try {
-            LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
-            if (lm != null) {
-                // Strictly use GPS_PROVIDER; never register NETWORK_PROVIDER for speedometer
-                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 200, 0, this);
-            }
-        } catch (Exception ignore) { }
+    private boolean hasSpeedSourceProblem() {
+        if (telemetry.isObdSpeed()) return false;
+        int st = telemetry.getGpsStatus();
+        return st == TelemetryHub.GPS_NO_PERMISSION || st == TelemetryHub.GPS_DISABLED;
     }
 
-    @Override public void onLocationChanged(Location l) {
-        if (l == null) return;
-        // Strictly ignore non-GPS providers to eliminate cell-tower / wifi coordinate jumping
-        if (l.getProvider() != null && !LocationManager.GPS_PROVIDER.equals(l.getProvider())) {
+    private void updateSpeedSource() {
+        if (speedo == null) return;
+        if (telemetry.isObdSpeed()) {
+            speedo.setSourceStatus("OBD", GREY);
             return;
         }
-        // Filter out inaccurate fixes (e.g. initial coarse lock)
-        if (l.hasAccuracy() && l.getAccuracy() > 30f) {
-            return;
+        switch (telemetry.getGpsStatus()) {
+            case TelemetryHub.GPS_OK:        speedo.setSourceStatus("GPS", GREY); break;
+            case TelemetryHub.GPS_SEARCHING: speedo.setSourceStatus("SEARCHING GPS", AMBER); break;
+            case TelemetryHub.GPS_DISABLED:  speedo.setSourceStatus("TAP: GPS IS OFF", RED); break;
+            default:                         speedo.setSourceStatus("TAP: ALLOW GPS", RED); break;
         }
+    }
 
-        float rawSpeedKmh = 0f;
-        if (l.hasSpeed()) {
-            rawSpeedKmh = l.getSpeed() * 3.6f;
-        } else if (lastLocation != null && lastLocationTime > 0) {
-            long dt = l.getTime() - lastLocationTime;
-            // Only calculate from distance if fix is highly accurate and dt is sane
-            if (dt >= 400 && dt <= 5000 && l.hasAccuracy() && l.getAccuracy() <= 15f
-                    && lastLocation.hasAccuracy() && lastLocation.getAccuracy() <= 15f) {
-                float distMeters = l.distanceTo(lastLocation);
-                rawSpeedKmh = (distMeters / (dt / 1000f)) * 3.6f;
+    private void fixSpeedSource() {
+        int st = telemetry.getGpsStatus();
+        if (st == TelemetryHub.GPS_NO_PERMISSION) {
+            // After "Don't ask again" Android no longer shows the dialog; send the user to settings
+            boolean blocked = prefs.getBoolean("location_permission_asked", false)
+                    && !shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION);
+            if (!blocked) {
+                requestLocationPermission();
+                return;
             }
-        }
-        lastLocation = l;
-        lastLocationTime = l.getTime();
-
-        // Stationary zero-drift snap: if speed is below 1.8 km/h, snap to 0 km/h
-        if (rawSpeedKmh < 1.8f) {
-            rawSpeedKmh = 0f;
-        }
-        // Clamp to sane automotive limits
-        if (rawSpeedKmh > 260f) {
-            rawSpeedKmh = (gpsSpeed > 0f && gpsSpeed <= 260f) ? gpsSpeed : 0f;
-        }
-
-        // Smooth with exponential moving average to eliminate sudden jumps
-        if (rawSpeedKmh == 0f) {
-            gpsSpeed = 0f;
-        } else if (gpsSpeed <= 0f) {
-            gpsSpeed = rawSpeedKmh;
-        } else {
-            gpsSpeed = (gpsSpeed * 0.40f) + (rawSpeedKmh * 0.60f);
-        }
-        lastGps = SystemClock.elapsedRealtime();
-
-        // If OBD is NOT providing live speed, immediately push GPS speed to speedometer & timer
-        if (!obd.connected || obd.speed < 0) {
-            curSpeed = gpsSpeed;
-            speedo.setSpeed(gpsSpeed);
-            timerStep(gpsSpeed);
-            if (sensorManager != null) {
-                sensorManager.updateKinematics(gpsSpeed);
+            toast("Allow Location for DashPilot to show speed without the OBD-II scanner");
+            try {
+                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", getPackageName(), null)));
+            } catch (Throwable t) {
+                toast("Open Android Settings > Apps > " + getString(R.string.app_name) + " > Permissions");
+            }
+        } else if (st == TelemetryHub.GPS_DISABLED) {
+            toast("Turn on Location (GPS) to show speed without the OBD-II scanner");
+            try {
+                startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+            } catch (Throwable t) {
+                toast("Open Android Settings > Location and turn it on");
             }
         }
     }
-    @Override public void onStatusChanged(String p, int s, Bundle e) { }
-    @Override public void onProviderEnabled(String p) { }
-    @Override public void onProviderDisabled(String p) { }
 
     private boolean launchFirst(String... pkgs) {
         for (String p : pkgs) {
@@ -2686,6 +2632,13 @@ public class MainActivity extends Activity implements LocationListener {
         top.addView(left, lp(0, M, 1f));
 
         speedo = new SpeedometerView(this);
+        speedo.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                // Tap fixes "ALLOW GPS" / "GPS OFF"; otherwise replays the needle sweep
+                if (hasSpeedSourceProblem()) fixSpeedSource();
+                else speedo.startNeedleSweep();
+            }
+        });
         top.addView(speedo, lp(0, M, 1.4f));
 
         // Gauges: RPM, Temp, Batt, Load, ATF, Fuel, DTC

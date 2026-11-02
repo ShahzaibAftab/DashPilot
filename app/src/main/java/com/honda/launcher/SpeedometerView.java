@@ -236,6 +236,22 @@ public class SpeedometerView extends View {
         return blendColor(st[i], st[i + 1], f);
     }
 
+    private String sourceLabel = "";
+    private int sourceColor = 0xFF90A4AE;
+
+    /**
+     * Small label under the needle hub naming the speed source ("GPS", "OBD") or a problem
+     * ("SEARCHING GPS"), so 0 km/h from a lost signal is not mistaken for standing still.
+     */
+    public void setSourceStatus(String label, int color) {
+        if (label == null) label = "";
+        if (!label.equals(sourceLabel) || color != sourceColor) {
+            sourceLabel = label;
+            sourceColor = color;
+            invalidate();
+        }
+    }
+
     /** Turns the big number red (used when any side gauge is in its danger zone). */
     public void setWarn(boolean w) { if (w != warn) { warn = w; invalidate(); } }
 
@@ -487,6 +503,14 @@ public class SpeedometerView extends View {
         txt.setColor((theme == THEME_SAPPHIRE) ? 0xFF80D8FF : (theme == THEME_ONYX) ? 0xFFFFD54F : 0xFF9AA5B1);
         txt.setTextSize(14);
         c.drawText("km/h", 150, 285, txt);
+
+        // Below the hub, in the dial's open bottom where the needle never sweeps
+        if (!sourceLabel.isEmpty() && !isSweeping) {
+            txt.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+            txt.setColor(sourceColor);
+            txt.setTextSize(11);
+            c.drawText(sourceLabel, 150, 207, txt);
+        }
     }
 
     public float getSpeed() { return shown; }
