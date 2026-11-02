@@ -36,10 +36,12 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.CompoundButton;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -51,6 +53,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.TimeZone;
 
 public class MainActivity extends Activity {
 
@@ -117,6 +120,22 @@ public class MainActivity extends Activity {
     // Dynamic badges for unsupported/supported detection
     private TextView badgeAtf, badgeFuel;
     private TextView reverseStatusText;
+
+    // Night mode: dark layer over the whole dashboard plus lower screen brightness
+    private View nightDim;
+    private final TextView[] nightButtons = new TextView[3];
+    private TextView nightStatusText, nightBrightnessLabel;
+    private boolean nightPreview;   // brightness slider is being dragged: show the night look now
+
+    // Media volume on the settings page
+    private SeekBar volumeBar;
+    private TextView volumeValue;
+    private boolean sliderTouch;    // a slider drag must not count as a page swipe
+    private final BroadcastReceiver volumeReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            updateVolumeUi();   // knob, steering wheel or another app changed the volume
+        }
+    };
 
     // In-launcher Bluetooth and OBD status card views
     private TextView obdStatusText, phoneStatusText, devHeaderBtn, btnPhoneAction;
@@ -323,7 +342,13 @@ public class MainActivity extends Activity {
         if (sensorManager != null) sensorManager.start();
         obd.autoConnect = prefs.getBoolean("auto_obd_connect", true);
         telemetry.start();   // already running in the background; restarts OBD if its thread died
+        applyNightMode();
         h.post(tick);
+
+        IntentFilter vf = new IntentFilter("android.media.VOLUME_CHANGED_ACTION");
+        vf.addAction("android.media.STREAM_MUTE_CHANGED_ACTION");
+        try { registerReceiver(volumeReceiver, vf); } catch (Exception ignore) { }
+        updateVolumeUi();
 
         IntentFilter f = new IntentFilter();
         f.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
@@ -369,6 +394,8 @@ public class MainActivity extends Activity {
         // OBD and GPS keep running in TelemetryHub while other apps are on screen
         try { unregisterReceiver(btMusicReceiver); }
         catch (Exception ignore) { }
+        try { unregisterReceiver(volumeReceiver); }
+        catch (Exception ignore) { }
     }
 
     @Override protected void onDestroy() {
@@ -412,9 +439,11 @@ public class MainActivity extends Activity {
         int a = e.getActionMasked();
         if (a == MotionEvent.ACTION_DOWN) {
             downX = e.getRawX(); downY = e.getRawY();
+            sliderTouch = false;
         } else if (a == MotionEvent.ACTION_UP) {
             float dx = e.getRawX() - downX, dy = e.getRawY() - downY;
-            if (Math.abs(dx) > dp(100) && Math.abs(dy) < Math.abs(dx) * 0.7f) {
+            // Dragging a volume / brightness slider sideways is not a page swipe
+            if (!sliderTouch && Math.abs(dx) > dp(100) && Math.abs(dy) < Math.abs(dx) * 0.7f) {
                 if (dx < 0) { // swipe left
                     if (curPage == 0) goToPage(1, true);
                     else if (curPage == 1) goToPage(2, true);
@@ -446,6 +475,7 @@ public class MainActivity extends Activity {
                 updateSpeedSource();
             }
             if (ticks % 6 == 0) updateNowPlaying();
+            if (ticks % 240 == 0) applyNightMode();   // once a minute: AUTO follows sunset
             ticks++;
             h.postDelayed(this, 250);
         }
@@ -881,6 +911,7 @@ public class MainActivity extends Activity {
             tmAccent.setBackgroundColor(accentCol);
         }
         updateThemeButtonsUi(theme);
+        updateNightButtonsUi();
     }
 
     private void updateThemeButtonsUi(int activeTheme) {
@@ -890,19 +921,24 @@ public class MainActivity extends Activity {
             TextView btn = themeButtons[i];
             if (btn == null) continue;
             boolean active = (themes[i] == activeTheme);
-            if (active) {
-                int activeBg = (activeTheme == THEME_SAPPHIRE) ? 0x4400E5FF : (activeTheme == THEME_ONYX) ? 0x44FFA000 : 0x44E4002B;
-                int activeBorder = (activeTheme == THEME_SAPPHIRE) ? 0xFF00E5FF : (activeTheme == THEME_ONYX) ? 0xFFFFA000 : 0xFFFF1744;
-                GradientDrawable g = new GradientDrawable();
-                g.setColor(activeBg);
-                g.setCornerRadius(dp(6));
-                g.setStroke(dp(2), activeBorder);
-                btn.setBackground(g);
-                btn.setTextColor(0xFFFFFFFF);
-            } else {
-                btn.setBackground(shape(0x22FFFFFF));
-                btn.setTextColor(0x8CFFFFFF);
-            }
+            styleChoiceButton(btn, active, activeTheme);
+        }
+    }
+
+    /** Selected / unselected look for a row of choice buttons, in the colours of the theme. */
+    private void styleChoiceButton(TextView btn, boolean active, int theme) {
+        if (active) {
+            int activeBg = (theme == THEME_SAPPHIRE) ? 0x4400E5FF : (theme == THEME_ONYX) ? 0x44FFA000 : 0x44E4002B;
+            int activeBorder = (theme == THEME_SAPPHIRE) ? 0xFF00E5FF : (theme == THEME_ONYX) ? 0xFFFFA000 : 0xFFFF1744;
+            GradientDrawable g = new GradientDrawable();
+            g.setColor(activeBg);
+            g.setCornerRadius(dp(6));
+            g.setStroke(dp(2), activeBorder);
+            btn.setBackground(g);
+            btn.setTextColor(0xFFFFFFFF);
+        } else {
+            btn.setBackground(shape(0x22FFFFFF));
+            btn.setTextColor(0x8CFFFFFF);
         }
     }
 
@@ -1579,6 +1615,7 @@ public class MainActivity extends Activity {
             pageGauges.setVisibility(View.VISIBLE);
             updateGaugeBadges();
             updateReverseStatus();
+            updateVolumeUi();
             updateObdStatusCard();
             refreshPairedDevicesList();
             if (animate) {
@@ -1990,7 +2027,9 @@ public class MainActivity extends Activity {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
 
-        // Top: Dedicated In-Launcher Bluetooth & OBD-II Management Card
+        list.addView(buildVolumeCard());
+
+        // Dedicated In-Launcher Bluetooth & OBD-II Management Card
         list.addView(buildBluetoothHubCard());
 
         TextView tGaugesHeader = label(16, 0xFFFFFFFF);
@@ -2022,6 +2061,7 @@ public class MainActivity extends Activity {
         list.addView(tModesHeader);
 
         list.addView(buildThemeSelectorCard());
+        list.addView(buildNightModeCard());
         list.addView(gaugeCard("AUTO-TURN ON BLUETOOTH", "Automatically turn Bluetooth ON when car system starts or screen wakes up", "auto_turn_on_bluetooth", null));
         list.addView(gaugeCard("STANDALONE SENSORS & TELEMETRY", "Read Battery, Coolant, RPM & Fuel using vehicle sensors & dynamic telemetry when OBD-II scanner is not connected", "standalone_telemetry", null));
         list.addView(gaugeCard("ENGINE HEARTBEAT", "Thin glowing pulse line ringing the speedometer that beats in time with engine RPM (ragged & red in danger)", "engine_heartbeat", null));
@@ -2142,6 +2182,233 @@ public class MainActivity extends Activity {
         updateThemeButtonsUi(currentTheme);
         card.addView(row);
         return card;
+    }
+
+    // ---------------------------- Media volume ----------------------------
+
+    private View buildVolumeCard() {
+        final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(shape(0x22FFFFFF));
+        card.setPadding(dp(16), dp(12), dp(16), dp(12));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(M, W);
+        clp.bottomMargin = dp(12);
+        card.setLayoutParams(clp);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = label(16, 0xFFFFFFFF);
+        title.setText("MEDIA VOLUME");
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        head.addView(title, lp(0, W, 1f));
+        volumeValue = label(16, 0xFFFFFFFF);
+        volumeValue.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        head.addView(volumeValue, new LinearLayout.LayoutParams(W, W));
+        card.addView(head);
+
+        TextView sub = label(12, 0x8CFFFFFF);
+        sub.setText("Music, Bluetooth audio and navigation voice");
+        sub.setPadding(0, dp(2), 0, dp(8));
+        card.addView(sub);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView down = button("−", 22, new Runnable() { public void run() { stepVolume(false); } });
+        down.setPadding(dp(18), dp(4), dp(18), dp(4));
+        row.addView(down, new LinearLayout.LayoutParams(W, W));
+
+        volumeBar = new SeekBar(this);
+        volumeBar.setPadding(dp(16), dp(10), dp(16), dp(10));
+        volumeBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (fromUser) setVolume(progress);
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) { sliderTouch = true; }
+            @Override public void onStopTrackingTouch(SeekBar bar) { updateVolumeUi(); }
+        });
+        row.addView(volumeBar, lp(0, W, 1f));
+
+        TextView up = button("+", 22, new Runnable() { public void run() { stepVolume(true); } });
+        up.setPadding(dp(18), dp(4), dp(18), dp(4));
+        row.addView(up, new LinearLayout.LayoutParams(W, W));
+
+        card.addView(row);
+        updateVolumeUi();
+        return card;
+    }
+
+    private void setVolume(int level) {
+        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) return;
+        try {
+            if (am.isStreamMute(AudioManager.STREAM_MUSIC) && level > 0) {
+                am.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0);
+            }
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, level, 0);
+        } catch (Throwable ignore) { }
+        updateVolumeUi();
+    }
+
+    private void stepVolume(boolean up) {
+        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) return;
+        try {
+            // RAISE also unmutes, just like the volume knob
+            am.adjustStreamVolume(AudioManager.STREAM_MUSIC,
+                    up ? AudioManager.ADJUST_RAISE : AudioManager.ADJUST_LOWER, 0);
+        } catch (Throwable ignore) { }
+        updateVolumeUi();
+    }
+
+    private void updateVolumeUi() {
+        if (volumeBar == null || volumeValue == null) return;
+        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (am == null) return;
+        try {
+            int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+            int vol = am.getStreamVolume(AudioManager.STREAM_MUSIC);
+            boolean muted = am.isStreamMute(AudioManager.STREAM_MUSIC);
+            if (volumeBar.getMax() != max) volumeBar.setMax(max);
+            if (!volumeBar.isPressed()) volumeBar.setProgress(vol);
+            volumeValue.setText(muted ? "MUTED" : vol + " / " + max);
+            volumeValue.setTextColor(muted ? AMBER : 0xFFFFFFFF);
+        } catch (Throwable ignore) { }
+    }
+
+    // ---------------------------- Night mode ----------------------------
+
+    private View buildNightModeCard() {
+        final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(shape(0x22FFFFFF));
+        card.setPadding(dp(16), dp(12), dp(16), dp(12));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(M, W);
+        clp.bottomMargin = dp(12);
+        card.setLayoutParams(clp);
+
+        TextView title = label(16, 0xFFFFFFFF);
+        title.setText("NIGHT MODE");
+        title.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        card.addView(title);
+
+        nightStatusText = label(12, 0x8CFFFFFF);
+        nightStatusText.setPadding(0, dp(2), 0, dp(10));
+        card.addView(nightStatusText);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        final String[] names = {"AUTO (SUNSET)", "ALWAYS ON", "OFF"};
+        final int[] modes = {NightMode.AUTO, NightMode.ON, NightMode.OFF};
+        for (int i = 0; i < 3; i++) {
+            final int mode = modes[i];
+            TextView btn = button(names[i], 12, new Runnable() {
+                public void run() {
+                    prefs.edit().putInt(NightMode.PREF_MODE, mode).apply();
+                    applyNightMode();
+                }
+            });
+            btn.setPadding(dp(8), dp(10), dp(8), dp(10));
+            nightButtons[i] = btn;
+            LinearLayout.LayoutParams blp = lp(0, W, 1f);
+            if (i > 0) blp.leftMargin = dp(8);
+            row.addView(btn, blp);
+        }
+        card.addView(row);
+
+        nightBrightnessLabel = label(13, 0xFFCFD8DC);
+        nightBrightnessLabel.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+        nightBrightnessLabel.setPadding(0, dp(12), 0, 0);
+        card.addView(nightBrightnessLabel);
+
+        SeekBar bright = new SeekBar(this);
+        bright.setPadding(dp(16), dp(10), dp(16), dp(10));
+        bright.setMax(100 - NightMode.MIN_BRIGHTNESS);
+        bright.setProgress(prefs.getInt(NightMode.PREF_BRIGHTNESS, NightMode.DEFAULT_BRIGHTNESS) - NightMode.MIN_BRIGHTNESS);
+        bright.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                prefs.edit().putInt(NightMode.PREF_BRIGHTNESS, progress + NightMode.MIN_BRIGHTNESS).apply();
+                applyNightMode();
+            }
+            @Override public void onStartTrackingTouch(SeekBar bar) {
+                // Show the night look while dragging, even in daytime, so the level can be judged
+                sliderTouch = true;
+                nightPreview = true;
+                applyNightMode();
+            }
+            @Override public void onStopTrackingTouch(SeekBar bar) {
+                nightPreview = false;
+                applyNightMode();
+            }
+        });
+        card.addView(bright, new LinearLayout.LayoutParams(M, W));
+
+        updateNightButtonsUi();
+        return card;
+    }
+
+    private void updateNightButtonsUi() {
+        int mode = prefs.getInt(NightMode.PREF_MODE, NightMode.AUTO);
+        int theme = prefs.getInt("ui_theme", THEME_SAPPHIRE);
+        final int[] modes = {NightMode.AUTO, NightMode.ON, NightMode.OFF};
+        for (int i = 0; i < 3; i++) {
+            if (nightButtons[i] != null) styleChoiceButton(nightButtons[i], modes[i] == mode, theme);
+        }
+    }
+
+    /**
+     * Applies night mode: lowers DashPilot's screen brightness and lays a dark layer over the
+     * dashboard (that layer also works on units whose backlight ignores apps). Re-checked
+     * every minute so AUTO switches at sunset and sunrise.
+     */
+    private void applyNightMode() {
+        int mode = prefs.getInt(NightMode.PREF_MODE, NightMode.AUTO);
+        int pct = prefs.getInt(NightMode.PREF_BRIGHTNESS, NightMode.DEFAULT_BRIGHTNESS);
+        double lat = prefs.getFloat("last_lat", (float) NightMode.FALLBACK_LAT);
+        double lon = prefs.getFloat("last_lon", (float) NightMode.FALLBACK_LON);
+        long now = System.currentTimeMillis();
+        TimeZone tz = TimeZone.getDefault();
+        boolean night = nightPreview || NightMode.isNight(mode, lat, lon, now, tz);
+
+        try {
+            float brightness = night ? pct / 100f : WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
+            WindowManager.LayoutParams wl = getWindow().getAttributes();
+            if (wl.screenBrightness != brightness) {
+                wl.screenBrightness = brightness;
+                getWindow().setAttributes(wl);
+            }
+        } catch (Throwable ignore) { }
+        if (nightDim != null) {
+            // Translucent colour rather than view alpha: no extra off-screen layer every frame
+            int alpha = Math.round(NightMode.dimAlpha(pct) * 255);
+            nightDim.setBackgroundColor(alpha << 24);
+            nightDim.setVisibility(night ? View.VISIBLE : View.GONE);
+        }
+
+        updateNightButtonsUi();
+        if (nightBrightnessLabel != null) {
+            nightBrightnessLabel.setText("NIGHT BRIGHTNESS  " + pct + "%");
+        }
+        if (nightStatusText != null) {
+            String status;
+            if (mode == NightMode.ON) {
+                status = "Dashboard is always dimmed";
+            } else if (mode == NightMode.OFF) {
+                status = "Dashboard never dims";
+            } else {
+                long[] sun = NightMode.sunriseSunset(lat, lon, now, tz);
+                SimpleDateFormat f = prefs.getBoolean("time_24h", true) ? timeFmt24 : timeFmt12;
+                status = (sun == null) ? "Dims after sunset"
+                        : "Dims from sunset " + f.format(new Date(sun[1])) + " to sunrise " + f.format(new Date(sun[0]));
+                status += night ? "  •  NIGHT now" : "  •  DAY now";
+            }
+            nightStatusText.setText(status);
+        }
     }
 
     private View buildBluetoothHubCard() {
@@ -2851,6 +3118,11 @@ public class MainActivity extends Activity {
         pageApps = buildAppsPage();
         pageApps.setVisibility(View.GONE);
         wrap.addView(pageApps, new FrameLayout.LayoutParams(M, M));
+
+        // Night mode dark layer on top of everything. It is not clickable, so touches pass through.
+        nightDim = new View(this);
+        nightDim.setVisibility(View.GONE);
+        wrap.addView(nightDim, new FrameLayout.LayoutParams(M, M));
 
         setContentView(wrap);
     }

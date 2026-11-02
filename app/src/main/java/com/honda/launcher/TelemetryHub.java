@@ -53,6 +53,7 @@ final class TelemetryHub implements LocationListener {
     private final Handler h = new Handler(Looper.getMainLooper());
     private final GpsSpeedFilter gpsFilter = new GpsSpeedFilter();
     private Location lastLocation;
+    private long lastLocationSavedAt;
     private volatile float gpsSpeed;
     private volatile long lastGpsAt;
 
@@ -192,11 +193,23 @@ final class TelemetryHub implements LocationListener {
         boolean updated = gpsFilter.onFix(l.hasSpeed(), l.getSpeed(), l.hasAccuracy(), l.getAccuracy(),
                 l.getTime(), distMeters);
         lastLocation = l;
+        saveLocationForNightMode(l);
         if (!updated) return;   // no usable speed in this fix: keep the last reading
 
         gpsSpeed = gpsFilter.getSpeedKmh();
         lastGpsAt = SystemClock.elapsedRealtime();
     }
+    /** Night mode AUTO needs the local sunset; a rough position, saved every 10 min, is plenty. */
+    private void saveLocationForNightMode(Location l) {
+        long now = SystemClock.elapsedRealtime();
+        if (lastLocationSavedAt != 0 && now - lastLocationSavedAt < 10 * 60_000L) return;
+        lastLocationSavedAt = now;
+        prefs.edit()
+                .putFloat("last_lat", (float) l.getLatitude())
+                .putFloat("last_lon", (float) l.getLongitude())
+                .apply();
+    }
+
     @Override public void onStatusChanged(String p, int s, Bundle e) { }
     @Override public void onProviderEnabled(String p) { }
     @Override public void onProviderDisabled(String p) { }
