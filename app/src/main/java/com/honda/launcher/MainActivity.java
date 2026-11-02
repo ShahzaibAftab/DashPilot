@@ -813,7 +813,7 @@ public class MainActivity extends Activity {
         boolean sDtc = prefs.getBoolean("show_dtc", true);
         boolean sTm = prefs.getBoolean("timer_on", true);
         boolean sMusic = prefs.getBoolean("show_music_bar", true);
-        boolean eco = prefs.getBoolean("eco_mode", false);
+        boolean eco = prefs.getBoolean("eco_mode", toggleDefault("eco_mode"));
         boolean heartbeat = prefs.getBoolean("engine_heartbeat", true);
         boolean heatTinted = prefs.getBoolean("heat_tinted_ambience", true);
         boolean autoBt = prefs.getBoolean("auto_turn_on_bluetooth", true);
@@ -1031,6 +1031,12 @@ public class MainActivity extends Activity {
             btnDownloadMusic.setText("● DOWNLOADING");
             btnDownloadMusic.setTextColor(0xFFFF3B30); // Bright Red
             btnDownloadMusic.setVisibility(View.VISIBLE);
+            return;
+        }
+
+        // "DOWNLOAD MUSIC ON DEMAND" switch in settings
+        if (!prefs.getBoolean("download_music_button", toggleDefault("download_music_button"))) {
+            btnDownloadMusic.setVisibility(View.GONE);
             return;
         }
 
@@ -2428,6 +2434,14 @@ public class MainActivity extends Activity {
         return card;
     }
 
+    /**
+     * Default of a settings switch before the user first touches it. Must match the default
+     * the code reading that setting uses, or the switch shows the opposite of what happens.
+     */
+    static boolean toggleDefault(String prefKey) {
+        return !"eco_mode".equals(prefKey);
+    }
+
     private View gaugeCard(String title, String subtitle, final String prefKey, TextView[] outBadge) {
         final int M = ViewGroup.LayoutParams.MATCH_PARENT, W = ViewGroup.LayoutParams.WRAP_CONTENT;
         LinearLayout card = new LinearLayout(this);
@@ -2473,7 +2487,7 @@ public class MainActivity extends Activity {
 
         // Right switch
         Switch sw = new Switch(this);
-        sw.setChecked(prefs.getBoolean(prefKey, true));
+        sw.setChecked(prefs.getBoolean(prefKey, toggleDefault(prefKey)));
         sw.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
                 prefs.edit().putBoolean(prefKey, isChecked).apply();

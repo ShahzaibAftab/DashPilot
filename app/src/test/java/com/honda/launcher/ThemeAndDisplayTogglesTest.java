@@ -19,6 +19,22 @@ import static org.junit.Assert.*;
 public class ThemeAndDisplayTogglesTest {
 
     @Test
+    public void testSettingsSwitchDefaultsMatchReaders() {
+        // ECO mode is off until turned on; its switch must not show ON on a fresh install
+        assertFalse(MainActivity.toggleDefault("eco_mode"));
+
+        String[] onByDefault = {
+                "show_rpm", "show_coolant", "show_battery", "show_batt_health", "show_load",
+                "show_atf", "show_fuel", "show_dtc", "timer_on", "auto_turn_on_bluetooth",
+                "standalone_telemetry", "engine_heartbeat", "heat_tinted_ambience", "show_music_bar",
+                "time_24h", "download_music_button", "keep_music_in_reverse", "auto_eq_enabled"
+        };
+        for (String key : onByDefault) {
+            assertTrue(key + " should default to ON", MainActivity.toggleDefault(key));
+        }
+    }
+
+    @Test
     public void testThemeConstants() {
         assertEquals(0, MainActivity.THEME_TYPER);
         assertEquals(1, MainActivity.THEME_SAPPHIRE);
