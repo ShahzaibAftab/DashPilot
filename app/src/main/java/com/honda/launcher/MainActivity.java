@@ -2035,6 +2035,15 @@ public class MainActivity extends Activity {
         reverseStatusText = bRev[0];
         list.addView(gaugeCard("AUTO AUDIO TUNING", "Intelligently equalizes sound in real-time according to different music", "auto_eq_enabled", null));
 
+        // Which build is installed, so updates can be told apart
+        TextView version = label(12, 0x8CFFFFFF);
+        String versionName = "?";
+        try { versionName = getPackageManager().getPackageInfo(getPackageName(), 0).versionName; } catch (Throwable ignore) { }
+        version.setText("DashPilot version " + versionName);
+        version.setGravity(Gravity.CENTER);
+        version.setPadding(0, dp(10), 0, dp(14));
+        list.addView(version);
+
         sv.addView(list);
         root.addView(sv, lp(M, 0, 1f));
         return root;
