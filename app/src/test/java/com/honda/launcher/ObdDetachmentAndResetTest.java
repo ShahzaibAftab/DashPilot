@@ -119,10 +119,17 @@ public class ObdDetachmentAndResetTest {
         boolean shouldAttemptConnect = obd.autoConnect || obd.manualConnectRequested;
         assertFalse("When autoConnect is false and no manual request, connect() MUST NOT run", shouldAttemptConnect);
 
-        // User clicks "CONNECT NOW":
+        // User clicks "CONNECT NOW": the worker gets past the auto-connect gate once. It clears
+        // manualConnectRequested as soon as it does, so reading the flag here raced with the
+        // worker thread; wait for its attempt instead (no Bluetooth in unit tests).
         obd.reconnectNow();
-        shouldAttemptConnect = obd.autoConnect || obd.manualConnectRequested;
-        assertTrue("When user clicks CONNECT NOW, manualConnectRequested allows single attempt", shouldAttemptConnect);
+        long deadline = System.currentTimeMillis() + 2000;
+        while ("Disconnected".equals(obd.statusMessage) && System.currentTimeMillis() < deadline) {
+            try { Thread.sleep(10); } catch (InterruptedException e) { break; }
+        }
+        assertFalse("When user clicks CONNECT NOW, manualConnectRequested allows single attempt",
+                obd.statusMessage.startsWith("Auto-connect disabled"));
+        assertEquals("Bluetooth hardware not detected", obd.statusMessage);
 
         obd.stop();
     }
