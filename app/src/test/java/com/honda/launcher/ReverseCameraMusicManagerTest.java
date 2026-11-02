@@ -1,11 +1,16 @@
 package com.honda.launcher;
 
+import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 
 import org.junit.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.*;
 
@@ -33,12 +38,91 @@ public class ReverseCameraMusicManagerTest {
         ReverseCameraMusicManager.applySystemReverseMuteConfig(null, false);
         ReverseCameraMusicManager.onReverseStateChanged(null, true);
         ReverseCameraMusicManager.onReverseStateChanged(null, false);
-        ReverseCameraMusicManager.handleAudioFocusChange(null, -1);
         ReverseCameraMusicManager.onActivityPaused(null);
-        ReverseCameraMusicManager.unmuteAndResumePlayback(null);
+        ReverseCameraMusicManager.onActivityResumed();
+        ReverseCameraMusicManager.noteSelfLaunch();
+        ReverseCameraMusicManager.startMonitoring(null);
 
         assertFalse(ReverseCameraMusicManager.isReverseIntent(null));
         assertFalse(ReverseCameraMusicManager.isReverseOn(null));
+        assertFalse(ReverseCameraMusicManager.handleReverseIntent(null, null));
+    }
+
+    @Test
+    public void testDuplicateReverseBroadcastIsHandledOnce() {
+        Context ctx = new FakeContext(true);
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, false);
+        assertFalse(ReverseCameraMusicManager.isReverseActive());
+
+        // The launcher and the boot receiver both deliver the same ON broadcast
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, true);
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, true);
+        assertTrue(ReverseCameraMusicManager.isReverseActive());
+
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, false);
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, false);
+        assertFalse(ReverseCameraMusicManager.isReverseActive());
+    }
+
+    @Test
+    public void testReverseStateTrackedEvenWhenToggleOff() {
+        // Turning the toggle on mid-reverse must not leave the state machine out of sync
+        Context ctx = new FakeContext(false);
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, false);
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, true);
+        assertTrue(ReverseCameraMusicManager.isReverseActive());
+        ReverseCameraMusicManager.onReverseStateChanged(ctx, false);
+        assertFalse(ReverseCameraMusicManager.isReverseActive());
+    }
+
+    @Test
+    public void testStatusText() {
+        assertEquals("Off: the head unit may mute music while reversing",
+                ReverseCameraMusicManager.getStatusText(new FakeContext(false)));
+        assertTrue(ReverseCameraMusicManager.getStatusText(new FakeContext(true))
+                .startsWith("No reverse signal received"));
+    }
+
+    @Test
+    public void testFormatAgo() {
+        assertEquals("0 s ago", ReverseCameraMusicManager.formatAgo(-50));
+        assertEquals("42 s ago", ReverseCameraMusicManager.formatAgo(42_000));
+        assertEquals("3 min ago", ReverseCameraMusicManager.formatAgo(200_000));
+        assertEquals("2 h ago", ReverseCameraMusicManager.formatAgo(7_300_000));
+    }
+
+    /** Context whose only working part is the "launcher" preferences file. */
+    private static class FakeContext extends ContextWrapper {
+        private final FakePrefs prefs = new FakePrefs();
+
+        FakeContext(boolean keepMusicInReverse) {
+            super(null);
+            prefs.values.put(ReverseCameraMusicManager.PREF_KEEP_MUSIC_IN_REVERSE, keepMusicInReverse);
+        }
+
+        @Override public SharedPreferences getSharedPreferences(String name, int mode) { return prefs; }
+        @Override public Context getApplicationContext() { return this; }
+        @Override public Object getSystemService(String name) { return null; }
+        @Override public int checkSelfPermission(String permission) { return PackageManager.PERMISSION_DENIED; }
+    }
+
+    private static class FakePrefs implements SharedPreferences {
+        final Map<String, Object> values = new HashMap<>();
+
+        @Override public boolean getBoolean(String key, boolean defValue) {
+            Object v = values.get(key);
+            return (v instanceof Boolean) ? (Boolean) v : defValue;
+        }
+        @Override public Map<String, ?> getAll() { return values; }
+        @Override public String getString(String key, String defValue) { return defValue; }
+        @Override public Set<String> getStringSet(String key, Set<String> defValues) { return defValues; }
+        @Override public int getInt(String key, int defValue) { return defValue; }
+        @Override public long getLong(String key, long defValue) { return defValue; }
+        @Override public float getFloat(String key, float defValue) { return defValue; }
+        @Override public boolean contains(String key) { return values.containsKey(key); }
+        @Override public Editor edit() { throw new UnsupportedOperationException(); }
+        @Override public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { }
+        @Override public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener l) { }
     }
 
     @Test

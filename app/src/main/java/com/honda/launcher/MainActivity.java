@@ -117,6 +117,7 @@ public class MainActivity extends Activity implements LocationListener {
 
     // Dynamic badges for unsupported/supported detection
     private TextView badgeAtf, badgeFuel;
+    private TextView reverseStatusText;
 
     // In-launcher Bluetooth and OBD status card views
     private TextView obdStatusText, phoneStatusText, devHeaderBtn, btnPhoneAction;
@@ -248,6 +249,7 @@ public class MainActivity extends Activity implements LocationListener {
         // Pre-configure system reverse mute settings to keep music unmuted
         boolean keepMusicInRev = prefs.getBoolean("keep_music_in_reverse", true);
         ReverseCameraMusicManager.applySystemReverseMuteConfig(this, !keepMusicInRev);
+        ReverseCameraMusicManager.startMonitoring(this);
 
         // Auto-turn on Bluetooth when system starts up
         BluetoothAutoEnabler.enableBluetoothIfNeeded(this);
@@ -257,11 +259,7 @@ public class MainActivity extends Activity implements LocationListener {
             @Override public void onReceive(Context context, Intent intent) {
                 if (intent == null) return;
                 String act = intent.getAction();
-                if (ReverseCameraMusicManager.isReverseIntent(intent)) {
-                    boolean isRev = ReverseCameraMusicManager.isReverseOn(intent);
-                    ReverseCameraMusicManager.onReverseStateChanged(MainActivity.this, isRev);
-                    return;
-                }
+                if (ReverseCameraMusicManager.handleReverseIntent(MainActivity.this, intent)) return;
                 if (Intent.ACTION_SCREEN_ON.equals(act) ||
                     Intent.ACTION_USER_PRESENT.equals(act) ||
                     Intent.ACTION_POWER_CONNECTED.equals(act) ||
@@ -326,7 +324,8 @@ public class MainActivity extends Activity implements LocationListener {
 
     @Override protected void onResume() {
         super.onResume();
-        ReverseCameraMusicManager.clearPendingCallbacks();
+        ReverseCameraMusicManager.onActivityResumed();
+        updateReverseStatus();
         BluetoothAutoEnabler.enableBluetoothIfNeeded(this);
         if (sensorManager != null) sensorManager.start();
         startGps();
@@ -388,6 +387,13 @@ public class MainActivity extends Activity implements LocationListener {
             screenReceiver = null;
         }
         super.onDestroy();
+    }
+
+    @Override public void startActivityForResult(Intent intent, int requestCode, Bundle options) {
+        // Every startActivity() lands here. An app DashPilot opens itself is not the reverse
+        // camera covering the launcher, so the reverse music guard must not react to it.
+        ReverseCameraMusicManager.noteSelfLaunch();
+        super.startActivityForResult(intent, requestCode, options);
     }
 
     @Override protected void onNewIntent(Intent i) {   // Home pressed while we are open
@@ -805,6 +811,7 @@ public class MainActivity extends Activity implements LocationListener {
         }
         boolean keepMusicInRev = prefs.getBoolean("keep_music_in_reverse", true);
         ReverseCameraMusicManager.setKeepMusicInReverseEnabled(this, keepMusicInRev);
+        updateReverseStatus();
         boolean autoEqOn = prefs.getBoolean("auto_eq_enabled", true);
         try { com.honda.launcher.audio.AutoEqManager.get(this).setEnabled(autoEqOn); } catch (Throwable ignore) { }
 
@@ -839,6 +846,14 @@ public class MainActivity extends Activity implements LocationListener {
 
         // Immediately update OBD status and clear danger if disabled!
         updateObd();
+    }
+
+    /** Shows under the reverse toggle what the head unit last signalled and what was repaired. */
+    private void updateReverseStatus() {
+        if (reverseStatusText == null) return;
+        reverseStatusText.setText(ReverseCameraMusicManager.getStatusText(this));
+        reverseStatusText.setTextColor(GREY);
+        reverseStatusText.setVisibility(View.VISIBLE);
     }
 
     private void applyTheme(int theme) {
@@ -1044,7 +1059,6 @@ public class MainActivity extends Activity implements LocationListener {
 
         AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         boolean isMusicActive = (am != null && am.isMusicActive());
-        ReverseCameraMusicManager.recordActiveMusicVolume(this);
 
         // 1. Try local MediaSession (Spotify, YouTube, media player running on unit)
         String activeTitle = null, activeArtist = null;
@@ -1566,6 +1580,7 @@ public class MainActivity extends Activity implements LocationListener {
         } else if (target == 1) { // Page 1: Gauges Settings & In-Launcher Bluetooth
             pageGauges.setVisibility(View.VISIBLE);
             updateGaugeBadges();
+            updateReverseStatus();
             updateObdStatusCard();
             refreshPairedDevicesList();
             if (animate) {
@@ -2013,7 +2028,9 @@ public class MainActivity extends Activity implements LocationListener {
         list.addView(gaugeCard("24-HOUR CLOCK FORMAT", "Display time in 24-hour (15:00) vs 12-hour (3:00 PM) format", "time_24h", null));
         list.addView(gaugeCard("ECO / COMFORT MODE", "Dynamic color feedback: Green (safe/eco), Yellow (warning), Red (danger)", "eco_mode", null));
         list.addView(gaugeCard("DOWNLOAD MUSIC ON DEMAND", "Show ⬇ Download button on music controls to save songs into Car LCD storage", "download_music_button", null));
-        list.addView(gaugeCard("PLAY MUSIC IN REVERSE CAMERA", "Do not pause or mute music when reverse camera is ON", "keep_music_in_reverse", null));
+        TextView[] bRev = new TextView[1];
+        list.addView(gaugeCard("PLAY MUSIC IN REVERSE CAMERA", "Do not pause or mute music when reverse camera is ON. If it still goes silent, also turn off reverse mute in the head unit's own car settings", "keep_music_in_reverse", bRev));
+        reverseStatusText = bRev[0];
         list.addView(gaugeCard("AUTO AUDIO TUNING", "Intelligently equalizes sound in real-time according to different music", "auto_eq_enabled", null));
 
         sv.addView(list);

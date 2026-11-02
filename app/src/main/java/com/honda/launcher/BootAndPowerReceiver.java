@@ -18,11 +18,7 @@ public class BootAndPowerReceiver extends BroadcastReceiver {
         String action = intent.getAction();
         Log.i(TAG, "Received system boot/power event: " + action);
 
-        if (ReverseCameraMusicManager.isReverseIntent(intent)) {
-            boolean isRev = ReverseCameraMusicManager.isReverseOn(intent);
-            ReverseCameraMusicManager.onReverseStateChanged(context, isRev);
-            return;
-        }
+        if (ReverseCameraMusicManager.handleReverseIntent(context, intent)) return;
 
         BluetoothAutoEnabler.enableBluetoothIfNeeded(context);
     }
