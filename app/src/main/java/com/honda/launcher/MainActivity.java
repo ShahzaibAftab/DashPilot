@@ -156,10 +156,10 @@ public class MainActivity extends Activity implements LocationListener {
                     if (obd != null && obd.autoConnect && !obd.connected) {
                         obd.reconnectNow();
                     }
-                    if (getConnectedPhoneDevice() == null) {
+                    if (isAutoPhoneConnectEnabled() && getConnectedPhoneDevice() == null) {
                         h.postDelayed(new Runnable() {
                             public void run() {
-                                if (getConnectedPhoneDevice() == null) {
+                                if (isAutoPhoneConnectEnabled() && getConnectedPhoneDevice() == null) {
                                     connectFirstPairedPhone();
                                 }
                             }
@@ -195,11 +195,11 @@ public class MainActivity extends Activity implements LocationListener {
                             final BluetoothDevice droppedPhone = lastConnectedPhone;
                             lastConnectedPhone = null;
                             final String savedMac = prefs.getString("phone_mac", "");
-                            if (!savedMac.isEmpty() && savedMac.equalsIgnoreCase(dev.getAddress())) {
+                            if (isAutoPhoneConnectEnabled() && !savedMac.isEmpty() && savedMac.equalsIgnoreCase(dev.getAddress())) {
                                 h.postDelayed(new Runnable() {
                                     public void run() {
                                         // Only reconnect if still not connected
-                                        if (getConnectedPhoneDevice() == null) {
+                                        if (isAutoPhoneConnectEnabled() && getConnectedPhoneDevice() == null) {
                                             connectPhoneAudio(droppedPhone);
                                         }
                                     }
@@ -1937,6 +1937,10 @@ public class MainActivity extends Activity implements LocationListener {
         openCarBluetooth();
     }
 
+    private boolean isAutoPhoneConnectEnabled() {
+        return prefs.getBoolean("auto_phone_connect", true);
+    }
+
     private boolean isObdCandidate(String name) {
         if (name == null) return false;
         String u = name.toUpperCase(Locale.US);
@@ -2284,6 +2288,49 @@ public class MainActivity extends Activity implements LocationListener {
         arlp.topMargin = dp(2);
         arlp.bottomMargin = dp(8);
         card.addView(autoRow, arlp);
+
+        // Auto-connect Phone Toggle Row
+        LinearLayout phoneAutoRow = new LinearLayout(this);
+        phoneAutoRow.setOrientation(LinearLayout.HORIZONTAL);
+        phoneAutoRow.setGravity(Gravity.CENTER_VERTICAL);
+        phoneAutoRow.setBackground(shape(0x14FFFFFF));
+        phoneAutoRow.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        LinearLayout phoneAutoInfo = new LinearLayout(this);
+        phoneAutoInfo.setOrientation(LinearLayout.VERTICAL);
+
+        TextView tPhoneAutoTitle = label(14, 0xFFFFFFFF);
+        tPhoneAutoTitle.setText("AUTO-CONNECT PHONE");
+        tPhoneAutoTitle.setTypeface(Typeface.create("sans-serif-condensed", Typeface.BOLD));
+
+        final TextView tPhoneAutoSub = label(11, 0x8CFFFFFF);
+        boolean autoPhone = isAutoPhoneConnectEnabled();
+        tPhoneAutoSub.setText(autoPhone ? "Automatically connects your phone when Bluetooth turns on or the link drops" : "Manual mode: Tap [CONNECT PHONE] to connect your phone");
+
+        phoneAutoInfo.addView(tPhoneAutoTitle);
+        phoneAutoInfo.addView(tPhoneAutoSub);
+        phoneAutoRow.addView(phoneAutoInfo, lp(0, W, 1f));
+
+        Switch swAutoPhone = new Switch(this);
+        swAutoPhone.setChecked(autoPhone);
+        swAutoPhone.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                prefs.edit().putBoolean("auto_phone_connect", isChecked).apply();
+                tPhoneAutoSub.setText(isChecked ? "Automatically connects your phone when Bluetooth turns on or the link drops" : "Manual mode: Tap [CONNECT PHONE] to connect your phone");
+                if (isChecked) {
+                    toast("Auto-connect phone enabled");
+                    if (getConnectedPhoneDevice() == null) connectFirstPairedPhone();
+                } else {
+                    toast("Auto-connect phone disabled (manual connect only)");
+                }
+            }
+        });
+        phoneAutoRow.addView(swAutoPhone, new LinearLayout.LayoutParams(W, W));
+
+        LinearLayout.LayoutParams parlp = new LinearLayout.LayoutParams(M, W);
+        parlp.topMargin = dp(2);
+        parlp.bottomMargin = dp(8);
+        card.addView(phoneAutoRow, parlp);
 
         // Phone Audio & Calls Section Card (Directly clickable!)
         LinearLayout phoneCard = new LinearLayout(this);
